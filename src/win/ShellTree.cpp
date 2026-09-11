@@ -17,11 +17,16 @@ bool ShellTree::create(HWND parent, const RECT& rc) {
     if (FAILED(hr) || !control_) return false;
 
     RECT r = rc;
-    // No NSTCS_SPRINGEXPAND: it expands - and moves the selection to - whatever
-    // the pointer happens to rest on, which silently re-filters the list.
+    // NSTCS_SINGLECLICKEXPAND matches the Explorer navigation pane, where one
+    // click on a folder both selects and expands it; without it the node only
+    // opens on a second click or on the expando.
+    //
+    // No NSTCS_SPRINGEXPAND: that expands - and moves the selection to -
+    // whatever the pointer merely rests on, silently re-filtering the list.
     const NSTCSTYLE style = NSTCS_HASEXPANDOS | NSTCS_ROOTHASEXPANDO
-                          | NSTCS_FULLROWSELECT | NSTCS_SHOWSELECTIONALWAYS
-                          | NSTCS_TABSTOP | NSTCS_NOINFOTIP | NSTCS_EVENHEIGHT;
+                          | NSTCS_SINGLECLICKEXPAND | NSTCS_FULLROWSELECT
+                          | NSTCS_SHOWSELECTIONALWAYS | NSTCS_TABSTOP
+                          | NSTCS_NOINFOTIP | NSTCS_EVENHEIGHT;
     hr = control_->Initialize(parent, &r, style);
     if (FAILED(hr)) {
         control_->Release();

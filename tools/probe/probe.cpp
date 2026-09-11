@@ -273,6 +273,10 @@ int wmain(int argc, wchar_t** argv) {
         }
     } else if (cmd == L"count") {
         printf("%d\n", static_cast<int>(SendMessageW(list, LVM_GETITEMCOUNT, 0, 0)));
+    } else if (cmd == L"treecount") {
+        // Grows when a node expands, so it shows whether one click was enough.
+        HWND tree = childByClass(main, L"SysTreeView32");
+        printf("%d\n", tree ? static_cast<int>(SendMessageW(tree, TVM_GETCOUNT, 0, 0)) : -1);
     } else if (cmd == L"status") {
         printf("%s\n", narrow(textOf(status)).c_str());
     } else if (cmd == L"gettext" && argc > 2) {
