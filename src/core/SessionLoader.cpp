@@ -104,6 +104,24 @@ bool forEachLine(const fs::path& path, Fn fn) {
     return true;
 }
 
+// Shortens to at most `maxChars` code points without splitting a multi-byte
+// sequence. Cutting at a byte offset left a broken character - rendered as a
+// replacement glyph - at the end of every long non-ASCII title, and counted
+// Cyrillic titles as twice as long as they look.
+std::string truncateUtf8(const std::string& s, size_t maxChars) {
+    size_t i = 0;
+    for (size_t chars = 0; chars < maxChars && i < s.size(); ++chars) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 1;
+        if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        i += len;
+    }
+    if (i >= s.size()) return s;
+    return s.substr(0, i) + "\xE2\x80\xA6";  // horizontal ellipsis
+}
+
 } // namespace
 
 std::vector<Session> SessionLoader::loadAll() {
@@ -180,7 +198,7 @@ std::vector<Session> SessionLoader::loadClaude() {
         std::string title;
         auto tit = titles.find(sid);
         if (tit != titles.end()) title = tit->second;
-        else title = info.prompt.length() > 80 ? info.prompt.substr(0, 80) : info.prompt;
+        else title = truncateUtf8(info.prompt, 80);
         if (title.empty()) title = "(no title)";
 
         result.push_back(Session{
