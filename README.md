@@ -13,7 +13,7 @@ apply to the whole selection:
 
 * **Copy session ID** (also `Ctrl+C`) — puts the ids on the clipboard, one per
   line; the status line confirms it.
-* **Resume in terminal** — opens a Windows Terminal tab per selected session, in
+* **Resume in terminal** (also `Ctrl+Enter`) — opens a Windows Terminal tab per selected session, in
   its directory, running `claude --resume <id>` or `opencode --session <id>`. A
   directory that no longer exists falls back to the user profile; more than
   three tabs at once is confirmed first.

@@ -107,6 +107,15 @@ MainWindow::~MainWindow() {
 bool MainWindow::translateAccelerator(MSG& msg) {
     if (!hwnd_) return false;
     if (msg.hwnd != hwnd_ && !IsChild(hwnd_, msg.hwnd)) return false;
+
+    // Enter never reaches the list: IsDialogMessage claims it as the dialog's
+    // default action. So the resume shortcut is taken here, ahead of it.
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN &&
+        msg.hwnd == hList_ && GetKeyState(VK_CONTROL) < 0) {
+        resumeSessions(selectedRows());
+        return true;
+    }
+
     // Gives the controls their WS_TABSTOP behaviour; without this Tab does
     // nothing, because the main window is not a dialog.
     return IsDialogMessageW(hwnd_, &msg) != FALSE;
@@ -697,7 +706,8 @@ void MainWindow::showListMenu(int x, int y) {
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, IDM_COPY,
                 (L"Copy session ID" + std::wstring(n > 1 ? L"s" : L"") + count + L"\tCtrl+C").c_str());
-    AppendMenuW(menu, MF_STRING, IDM_RESUME, (L"Resume in terminal" + count).c_str());
+    AppendMenuW(menu, MF_STRING, IDM_RESUME,
+                (L"Resume in terminal" + count + L"\tCtrl+Enter").c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_DELETE,
                 (L"Delete session" + std::wstring(n > 1 ? L"s" : L"") + count + L"\tDel").c_str());
