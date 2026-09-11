@@ -40,9 +40,14 @@ private:
         std::wstring title;
         std::wstring model;
         std::wstring updated;
+        std::wstring size;
         std::wstring lcDirectory;  // lowercased, for the folder filter
         std::wstring lcSearch;     // lowercased title + directory + id
     };
+
+    // Column order is this enum's order and nothing else. Settings refer to
+    // columns by name, so this can be reshuffled without touching them.
+    enum Column { kAgent, kSessionId, kTitle, kModel, kSize, kUpdated, kColumns };
 
     static constexpr int IDC_SEARCH = 101;
     static constexpr int IDC_AGENT = 102;
@@ -90,6 +95,8 @@ private:
     void onColumnClick(int column);
     void sortFiltered();
     void showSortIndicator();
+    static const char* columnName(int column);
+    static int columnByName(const std::string& name);
     void onSplitterDown(LPARAM lParam);
     void onSplitterMove(LPARAM lParam);
     void onSplitterUp();
@@ -139,7 +146,7 @@ private:
     int leftWidth_ = 260;
     bool dragSplitter_ = false;
     int splitterX_ = 0;
-    int colWidth_[5] = {80, 180, 0, 100, 132};
-    int sortColumn_ = 4;
+    int colWidth_[kColumns] = {};  // pixels; Title is derived, the rest persist
+    int sortColumn_ = kUpdated;
     bool sortDescending_ = true;
 };

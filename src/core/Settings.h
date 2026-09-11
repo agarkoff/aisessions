@@ -1,16 +1,21 @@
 #pragma once
 #include <string>
 
-// Widths are stored in 96-dpi units and scaled to the window's DPI on load.
+// Persisted layout. Widths are in 96-dpi units and scaled to the window's DPI
+// on load. Everything is keyed by what it describes, never by column index, so
+// reordering the columns in the UI cannot silently reassign a width or the
+// sort to a different column.
 struct Settings {
     int leftWidth = 260;
-    int col0 = 80;   // Agent
-    int col1 = 180;  // Session ID
-    int col3 = 100;  // Model
-    int col4 = 132;  // Updated ("yyyy-MM-dd HH:mm")
 
-    int sortColumn = 4;          // Updated
-    bool sortDescending = true;  // newest first
+    int agentWidth = 80;
+    int sessionIdWidth = 180;
+    int modelWidth = 100;
+    int sizeWidth = 80;
+    int updatedWidth = 132;  // "yyyy-MM-dd HH:mm"
+
+    std::string sortBy = "updated";  // agent | sessionId | title | model | size | updated
+    bool sortDescending = true;      // newest first
 
     static Settings load();
     void save() const;

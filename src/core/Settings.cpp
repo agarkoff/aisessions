@@ -51,15 +51,19 @@ Settings Settings::load() {
 
     mini::JValue root;
     if (!mini::parse(text, root) || !root.isObject()) return s;
-    if (root.get("leftWidth")) s.leftWidth = clampWidth(root.intOf("leftWidth"), s.leftWidth, 60, 4000);
-    if (root.get("col0")) s.col0 = clampWidth(root.intOf("col0"), s.col0, 20, 2000);
-    if (root.get("col1")) s.col1 = clampWidth(root.intOf("col1"), s.col1, 20, 2000);
-    if (root.get("col3")) s.col3 = clampWidth(root.intOf("col3"), s.col3, 20, 2000);
-    if (root.get("col4")) s.col4 = clampWidth(root.intOf("col4"), s.col4, 20, 2000);
-    if (root.get("sortColumn")) {
-        long long c = root.intOf("sortColumn");
-        if (c >= 0 && c < 5) s.sortColumn = static_cast<int>(c);
-    }
+
+    auto width = [&](const char* key, int& into, int lo, int hi) {
+        if (root.get(key)) into = clampWidth(root.intOf(key), into, lo, hi);
+    };
+    width("leftWidth", s.leftWidth, 60, 4000);
+    width("agentWidth", s.agentWidth, 20, 2000);
+    width("sessionIdWidth", s.sessionIdWidth, 20, 2000);
+    width("modelWidth", s.modelWidth, 20, 2000);
+    width("sizeWidth", s.sizeWidth, 20, 2000);
+    width("updatedWidth", s.updatedWidth, 20, 2000);
+
+    std::string sortBy = root.strOf("sortBy");
+    if (!sortBy.empty()) s.sortBy = sortBy;  // an unknown name falls back in the window
     if (const mini::JValue* v = root.get("sortDescending"); v && v->isBool())
         s.sortDescending = v->b;
     return s;
@@ -69,11 +73,12 @@ void Settings::save() const {
     std::string text =
         "{\n"
         "  \"leftWidth\": " + std::to_string(leftWidth) + ",\n"
-        "  \"col0\": " + std::to_string(col0) + ",\n"
-        "  \"col1\": " + std::to_string(col1) + ",\n"
-        "  \"col3\": " + std::to_string(col3) + ",\n"
-        "  \"col4\": " + std::to_string(col4) + ",\n"
-        "  \"sortColumn\": " + std::to_string(sortColumn) + ",\n"
+        "  \"agentWidth\": " + std::to_string(agentWidth) + ",\n"
+        "  \"sessionIdWidth\": " + std::to_string(sessionIdWidth) + ",\n"
+        "  \"modelWidth\": " + std::to_string(modelWidth) + ",\n"
+        "  \"sizeWidth\": " + std::to_string(sizeWidth) + ",\n"
+        "  \"updatedWidth\": " + std::to_string(updatedWidth) + ",\n"
+        "  \"sortBy\": \"" + sortBy + "\",\n"
         "  \"sortDescending\": " + (sortDescending ? "true" : "false") + "\n"
         "}\n";
 

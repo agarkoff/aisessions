@@ -122,6 +122,23 @@ std::string truncateUtf8(const std::string& s, size_t maxChars) {
     return s.substr(0, i) + "\xE2\x80\xA6";  // horizontal ellipsis
 }
 
+// Pulls the value of the first "model":"claude-..." on a transcript line. A
+// substring scan rather than a JSON parse: assistant lines are the largest in
+// the file, and the value is a plain identifier.
+std::string_view extractModel(std::string_view line) {
+    static constexpr std::string_view key = "\"model\":\"";
+    size_t at = line.find(key);
+    while (at != std::string_view::npos) {
+        size_t start = at + key.size();
+        size_t end = line.find('"', start);
+        if (end == std::string_view::npos) break;
+        std::string_view value = line.substr(start, end - start);
+        if (value.rfind("claude-", 0) == 0) return value;
+        at = line.find(key, end);
+    }
+    return {};
+}
+
 } // namespace
 
 std::vector<Session> SessionLoader::loadAll() {
@@ -142,6 +159,8 @@ std::vector<Session> SessionLoader::loadClaude() {
     struct Info { std::string dir; long long created = 0; long long updated = 0; std::string prompt; };
     std::unordered_map<std::string, Info> sessions;
     std::unordered_map<std::string, std::string> titles;
+    std::unordered_map<std::string, long long> sizes;   // transcript bytes by id
+    std::unordered_map<std::string, std::string> models; // last model used, by id
 
     forEachLine(historyFile, [&](std::string_view line) {
         mini::JValue root;
@@ -178,16 +197,35 @@ std::vector<Session> SessionLoader::loadClaude() {
             for (fs::directory_iterator fileIt(projIt->path(), fileEc); !fileEc && fileIt != end;
                  fileIt.increment(fileEc)) {
                 if (fileIt->path().extension() != L".jsonl") continue;
+                // The transcript is named after its session; its size is the
+                // session's size, and it is free to pick up during this scan.
+                std::string transcriptId = utf16to8(fileIt->path().stem().wstring());
+                std::error_code sizeEc;
+                auto bytes = fileIt->file_size(sizeEc);
+                if (!sizeEc) sizes[transcriptId] = static_cast<long long>(bytes);
+
                 forEachLine(fileIt->path(), [&](std::string_view line) {
-                    // Cheap reject first: only a handful of lines in these
-                    // files are titles, and parsing the rest is pure waste.
-                    if (line.find("\"ai-title\"") == std::string_view::npos) return;
-                    mini::JValue doc;
-                    if (!mini::parse(std::string(line), doc) || !doc.isObject()) return;
-                    if (doc.strOf("type") != "ai-title") return;
-                    std::string s = doc.strOf("sessionId");
-                    std::string t = doc.strOf("aiTitle");
-                    if (!s.empty() && !t.empty()) titles[s] = std::move(t);
+                    // Cheap rejects first: only a handful of lines in these
+                    // files matter, and parsing the rest is pure waste.
+                    if (line.find("\"ai-title\"") != std::string_view::npos) {
+                        mini::JValue doc;
+                        if (!mini::parse(std::string(line), doc) || !doc.isObject()) return;
+                        if (doc.strOf("type") != "ai-title") return;
+                        std::string s = doc.strOf("sessionId");
+                        std::string t = doc.strOf("aiTitle");
+                        if (!s.empty() && !t.empty()) titles[s] = std::move(t);
+                        return;
+                    }
+
+                    // The model is recorded on every assistant message. A
+                    // session can switch models, so keep the last one seen -
+                    // that is what it is running on now, which matches what the
+                    // OpenCode column shows. The "claude-" check skips the
+                    // "<synthetic>" placeholder and any "model" key that merely
+                    // appears inside quoted content.
+                    if (line.find("\"type\":\"assistant\"") == std::string_view::npos) return;
+                    std::string_view model = extractModel(line);
+                    if (!model.empty()) models[transcriptId] = std::string(model);
                 });
             }
         }
@@ -201,9 +239,17 @@ std::vector<Session> SessionLoader::loadClaude() {
         else title = truncateUtf8(info.prompt, 80);
         if (title.empty()) title = "(no title)";
 
+        // Claude Code prunes transcripts after cleanupPeriodDays (30 by
+        // default), so most older sessions have no file to measure. Mark them
+        // as unknown rather than leaving the cells blank.
+        long long size = 0;
+        std::string model = "\xE2\x80\x94";  // em dash
+        if (auto sz = sizes.find(sid); sz != sizes.end()) size = sz->second;
+        if (auto md = models.find(sid); md != models.end()) model = md->second;
+
         result.push_back(Session{
-            "Claude", sid, info.dir, title, "",
-            info.created, info.updated });
+            "Claude", sid, info.dir, title, std::move(model),
+            info.created, info.updated, size });
     }
     return result;
 }
@@ -227,6 +273,23 @@ std::vector<Session> SessionLoader::loadOpenCode() {
     if (sqlite3_open_v2(utf8Path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         sqlite3_close(db);
         return {};
+    }
+
+    // A session's content lives in the message and part tables as JSON text;
+    // its size is the sum of both, in bytes. Two aggregate queries up front
+    // are far cheaper than one per session.
+    std::unordered_map<std::string, long long> sizes;
+    for (const char* table : {"message", "part"}) {
+        std::string aggregate = std::string(
+            "SELECT session_id, SUM(LENGTH(CAST(data AS BLOB))) FROM ") + table +
+            " GROUP BY session_id";
+        sqlite3_stmt* agg = nullptr;
+        if (sqlite3_prepare_v2(db, aggregate.c_str(), -1, &agg, nullptr) != SQLITE_OK) continue;
+        while (sqlite3_step(agg) == SQLITE_ROW) {
+            const unsigned char* id = sqlite3_column_text(agg, 0);
+            if (id) sizes[reinterpret_cast<const char*>(id)] += sqlite3_column_int64(agg, 1);
+        }
+        sqlite3_finalize(agg);
     }
 
     const char* sql =
@@ -256,14 +319,19 @@ std::vector<Session> SessionLoader::loadOpenCode() {
         std::string title = col(2);
         if (title.empty()) title = "(no title)";
 
+        std::string id = col(0);
+        long long size = 0;
+        if (auto sz = sizes.find(id); sz != sizes.end()) size = sz->second;
+
         result.push_back(Session{
             "OpenCode",
-            col(0),
+            std::move(id),
             col(1),
             std::move(title),
             std::move(modelStr),
             sqlite3_column_int64(stmt, 3),
             sqlite3_column_int64(stmt, 4),
+            size,
         });
     }
 

@@ -40,11 +40,13 @@ LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 
 MainWindow::MainWindow(const Settings& settings)
     : settings_(settings), leftWidth_(settings.leftWidth) {
-    colWidth_[0] = settings.col0;
-    colWidth_[1] = settings.col1;
-    colWidth_[3] = settings.col3;
-    colWidth_[4] = settings.col4;
-    sortColumn_ = settings.sortColumn;
+    colWidth_[kAgent] = settings.agentWidth;
+    colWidth_[kSessionId] = settings.sessionIdWidth;
+    colWidth_[kModel] = settings.modelWidth;
+    colWidth_[kSize] = settings.sizeWidth;
+    colWidth_[kUpdated] = settings.updatedWidth;
+    int sortBy = columnByName(settings.sortBy);
+    sortColumn_ = sortBy >= 0 ? sortBy : kUpdated;
     sortDescending_ = settings.sortDescending;
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
@@ -204,7 +206,7 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         rescaleGeometry(oldDpi, dpi_);
         createFont();
         applyRowHeight();
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < kColumns; i++)
             SendMessageW(hList_, LVM_SETCOLUMNWIDTH, i, colWidth_[i]);
         if (lParam) {
             const RECT* r = reinterpret_cast<const RECT*>(lParam);
@@ -521,11 +523,12 @@ void MainWindow::applyFonts() {
 void MainWindow::setupColumns() {
     if (columnsCreated_ || !hList_) return;
     columnsCreated_ = true;
-    const wchar_t* headers[] = {L"Agent", L"Session ID", L"Title", L"Model", L"Updated"};
-    for (int i = 0; i < 5; i++) {
+    static const wchar_t* const headers[kColumns] = {
+        L"Agent", L"Session ID", L"Title", L"Model", L"Size", L"Updated"};
+    for (int i = 0; i < kColumns; i++) {
         LVCOLUMNW col{};
         col.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT;
-        col.fmt = LVCFMT_LEFT;
+        col.fmt = (i == kSize) ? LVCFMT_RIGHT : LVCFMT_LEFT;  // sizes align on the unit
         col.cx = colWidth_[i];
         col.pszText = const_cast<LPWSTR>(headers[i]);
         SendMessageW(hList_, LVM_INSERTCOLUMNW, i, reinterpret_cast<LPARAM>(&col));
@@ -627,11 +630,13 @@ void MainWindow::layout() {
     MoveWindow(hStatus_, m, statusY, cx - m * 2, statusH, TRUE);
 
     // Title absorbs whatever the fixed-width columns leave over.
-    int others = colWidth_[0] + colWidth_[1] + colWidth_[3] + colWidth_[4];
+    int others = 0;
+    for (int i = 0; i < kColumns; i++)
+        if (i != kTitle) others += colWidth_[i];
     int titleW = std::max(scale(60),
                           listW - others - GetSystemMetrics(SM_CXVSCROLL) - scale(6));
-    colWidth_[2] = titleW;
-    SendMessageW(hList_, LVM_SETCOLUMNWIDTH, 2, titleW);
+    colWidth_[kTitle] = titleW;
+    SendMessageW(hList_, LVM_SETCOLUMNWIDTH, kTitle, titleW);
 }
 
 //--------------------------------------------------------------------
@@ -817,14 +822,26 @@ void MainWindow::deleteSessions(const std::vector<int>& rows) {
 // Sorting
 //--------------------------------------------------------------------
 
+const char* MainWindow::columnName(int column) {
+    static const char* const names[kColumns] = {
+        "agent", "sessionId", "title", "model", "size", "updated"};
+    return (column >= 0 && column < kColumns) ? names[column] : "";
+}
+
+int MainWindow::columnByName(const std::string& name) {
+    for (int i = 0; i < kColumns; i++)
+        if (name == columnName(i)) return i;
+    return -1;
+}
+
 void MainWindow::onColumnClick(int column) {
-    if (column < 0 || column >= 5) return;
+    if (column < 0 || column >= kColumns) return;
     if (column == sortColumn_) {
         sortDescending_ = !sortDescending_;
     } else {
         sortColumn_ = column;
-        // Dates read naturally newest-first; text columns A to Z.
-        sortDescending_ = (column == 4);
+        // Dates and sizes read naturally largest-first; text columns A to Z.
+        sortDescending_ = (column == kUpdated || column == kSize);
     }
     sortFiltered();
     fillList();
@@ -836,19 +853,22 @@ void MainWindow::sortFiltered() {
     auto text = [this](int index) -> const std::wstring& {
         const SessionView& v = views_[index];
         switch (sortColumn_) {
-        case 0: return v.agent;
-        case 1: return v.sessionId;
-        case 2: return v.title;
-        case 3: return v.model;
+        case kAgent: return v.agent;
+        case kSessionId: return v.sessionId;
+        case kTitle: return v.title;
+        case kModel: return v.model;
+        case kSize: return v.size;
         default: return v.updated;
         }
     };
 
     auto less = [&](int a, int b) {
         int order;
-        if (sortColumn_ == 4) {
-            long long ta = all_[a].updatedMs, tb = all_[b].updatedMs;
-            order = (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
+        if (sortColumn_ == kUpdated || sortColumn_ == kSize) {
+            // Numeric columns compare the underlying value, not the label.
+            long long va = sortColumn_ == kUpdated ? all_[a].updatedMs : all_[a].sizeBytes;
+            long long vb = sortColumn_ == kUpdated ? all_[b].updatedMs : all_[b].sizeBytes;
+            order = (va < vb) ? -1 : (va > vb) ? 1 : 0;
         } else {
             const std::wstring& sa = text(a);
             const std::wstring& sb = text(b);
@@ -865,7 +885,7 @@ void MainWindow::sortFiltered() {
 
 void MainWindow::showSortIndicator() {
     if (!hHeader_) return;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < kColumns; i++) {
         HDITEMW item{};
         item.mask = HDI_FORMAT;
         if (!SendMessageW(hHeader_, HDM_GETITEMW, i, reinterpret_cast<LPARAM>(&item))) continue;
@@ -1066,6 +1086,7 @@ void MainWindow::buildViews() {
         v.title = utf8to16(s.title);
         v.model = utf8to16(s.model);
         v.updated = utf8to16(s.updatedStr());
+        v.size = utf8to16(s.sizeStr());
         v.lcDirectory = lowerW(v.directory);
         v.lcSearch = lowerW(v.title) + L'\n' + v.lcDirectory + L'\n' + lowerW(v.sessionId);
         views_.push_back(std::move(v));
@@ -1126,10 +1147,11 @@ void MainWindow::fillList() {
         int inserted = static_cast<int>(SendMessageW(hList_, LVM_INSERTITEMW, 0,
                                                      reinterpret_cast<LPARAM>(&item)));
         if (inserted < 0) continue;
-        setSubItem(inserted, 1, v.sessionId);
-        setSubItem(inserted, 2, v.title);
-        setSubItem(inserted, 3, v.model);
-        setSubItem(inserted, 4, v.updated);
+        setSubItem(inserted, kSessionId, v.sessionId);
+        setSubItem(inserted, kTitle, v.title);
+        setSubItem(inserted, kModel, v.model);
+        setSubItem(inserted, kSize, v.size);
+        setSubItem(inserted, kUpdated, v.updated);
     }
 
     SendMessageW(hList_, WM_SETREDRAW, TRUE, 0);
@@ -1199,20 +1221,21 @@ void MainWindow::setStatus(const std::wstring& text) {
 }
 
 void MainWindow::readColumnWidths() {
-    colWidth_[0] = static_cast<int>(SendMessageW(hList_, LVM_GETCOLUMNWIDTH, 0, 0));
-    colWidth_[1] = static_cast<int>(SendMessageW(hList_, LVM_GETCOLUMNWIDTH, 1, 0));
-    colWidth_[3] = static_cast<int>(SendMessageW(hList_, LVM_GETCOLUMNWIDTH, 3, 0));
-    colWidth_[4] = static_cast<int>(SendMessageW(hList_, LVM_GETCOLUMNWIDTH, 4, 0));
+    for (int i = 0; i < kColumns; i++) {
+        if (i == kTitle) continue;  // derived from the leftover width
+        colWidth_[i] = static_cast<int>(SendMessageW(hList_, LVM_GETCOLUMNWIDTH, i, 0));
+    }
 }
 
 void MainWindow::saveSettings() {
     // Persisted in 96-dpi units so the layout carries over between monitors.
     settings_.leftWidth = unscale(leftWidth_);
-    settings_.col0 = unscale(colWidth_[0]);
-    settings_.col1 = unscale(colWidth_[1]);
-    settings_.col3 = unscale(colWidth_[3]);
-    settings_.col4 = unscale(colWidth_[4]);
-    settings_.sortColumn = sortColumn_;
+    settings_.agentWidth = unscale(colWidth_[kAgent]);
+    settings_.sessionIdWidth = unscale(colWidth_[kSessionId]);
+    settings_.modelWidth = unscale(colWidth_[kModel]);
+    settings_.sizeWidth = unscale(colWidth_[kSize]);
+    settings_.updatedWidth = unscale(colWidth_[kUpdated]);
+    settings_.sortBy = columnName(sortColumn_);
     settings_.sortDescending = sortDescending_;
     settings_.save();
 }

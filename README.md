@@ -65,9 +65,19 @@ The project transcripts run to hundreds of megabytes, so they are scanned in
 * `AISESSIONS_TRACE=<file>` logs the shell control's callbacks. Those callbacks
   are the only visible evidence of what a gesture did, and they fire for real
   input only — a posted `WM_LBUTTONDOWN` never raises `OnItemClick`.
-* Window geometry and column widths persist to
-  `%LOCALAPPDATA%\AISessions\settings.json`, stored in 96-dpi units so a saved
-  layout survives moving between monitors of different scaling.
+* The Size column is the transcript file for Claude and the sum of the message
+  and part rows for OpenCode, in bytes; sorting compares the number, not the
+  label. Claude's Model is the last one an assistant message in the transcript
+  was produced with. Both show "—" for a Claude session whose transcript is
+  gone: Claude Code prunes transcripts after `cleanupPeriodDays` (30 by
+  default), and such a session cannot be resumed either — only its history
+  line survives.
+* Window geometry, column widths and the sort persist to
+  `%LOCALAPPDATA%\AISessions\settings.json`. Widths are in 96-dpi units so a
+  saved layout survives moving between monitors of different scaling, and every
+  entry is keyed by the column's name rather than its index, so reordering
+  columns in the code cannot silently hand a width or the sort to a different
+  column.
 
 ## Build
 
