@@ -197,9 +197,11 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_ERASEBKGND: {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
         RECT rc{};
         GetClientRect(hwnd_, &rc);
-        FillRect(reinterpret_cast<HDC>(wParam), &rc, theme.backgroundBrush());
+        FillRect(hdc, &rc, theme.backgroundBrush());
+        paintSearchFrame(hdc);
         return 1;
     }
 
@@ -211,7 +213,15 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         return reinterpret_cast<LRESULT>(theme.backgroundBrush());
     }
 
-    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLOREDIT: {
+        // The search field sits inside a frame the parent fills with field(),
+        // so it has to use the same colour or a seam shows around the text.
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(hdc, theme.text());
+        SetBkColor(hdc, theme.field());
+        return reinterpret_cast<LRESULT>(theme.fieldBrush());
+    }
+
     case WM_CTLCOLORLISTBOX: {
         HDC hdc = reinterpret_cast<HDC>(wParam);
         SetTextColor(hdc, theme.text());
@@ -265,8 +275,10 @@ void MainWindow::createFont() {
 }
 
 void MainWindow::createChildren() {
+    // Borderless: the parent draws the frame, so the search box, the agent list
+    // and the button all share one border colour instead of three system looks.
     hSearch_ = CreateWindowExW(0, L"EDIT", L"",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SEARCH)),
         nullptr, nullptr);
     SendMessageW(hSearch_, EM_SETCUEBANNER, TRUE,
@@ -311,7 +323,144 @@ void MainWindow::createChildren() {
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUS)),
         nullptr, nullptr);
 
+    refreshChrome_ = {this, false, false, false};
+    agentChrome_ = {this, true, false, false};
+    SetWindowSubclass(hRefresh_, &MainWindow::flatChromeProc, 1,
+                      reinterpret_cast<DWORD_PTR>(&refreshChrome_));
+    SetWindowSubclass(hAgent_, &MainWindow::flatChromeProc, 1,
+                      reinterpret_cast<DWORD_PTR>(&agentChrome_));
+
     applyFonts();
+}
+
+LRESULT CALLBACK MainWindow::flatChromeProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                            LPARAM lParam, UINT_PTR id, DWORD_PTR data) {
+    auto* chrome = reinterpret_cast<FlatChrome*>(data);
+    if (!chrome || !chrome->owner) return DefSubclassProc(hwnd, msg, wParam, lParam);
+
+    auto repaint = [&] { InvalidateRect(hwnd, nullptr, FALSE); };
+
+    switch (msg) {
+    case WM_MOUSEMOVE:
+        if (!chrome->hot) {
+            chrome->hot = true;
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tme);
+            repaint();
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        chrome->hot = false;
+        repaint();
+        break;
+
+    case WM_LBUTTONDOWN:
+        chrome->pressed = true;
+        repaint();
+        break;
+
+    case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED:
+        chrome->pressed = false;
+        repaint();
+        break;
+
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+        repaint();
+        break;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT:
+        chrome->owner->paintFlatChrome(hwnd, *chrome);
+        return 0;
+
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, &MainWindow::flatChromeProc, id);
+        break;
+
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+void MainWindow::paintFlatChrome(HWND hwnd, FlatChrome& chrome) {
+    PAINTSTRUCT ps{};
+    HDC hdc = BeginPaint(hwnd, &ps);
+
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    Theme& theme = Theme::instance();
+
+    bool dropped = chrome.isCombo &&
+                   SendMessageW(hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0;
+    COLORREF fill = (chrome.pressed || dropped) ? theme.fieldPressed()
+                  : chrome.hot                  ? theme.fieldHover()
+                                                : theme.field();
+
+    HBRUSH bg = CreateSolidBrush(fill);
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+
+    HBRUSH frame = CreateSolidBrush(GetFocus() == hwnd ? theme.accent()
+                                                       : theme.fieldBorder());
+    FrameRect(hdc, &rc, frame);
+    DeleteObject(frame);
+
+    HGDIOBJ oldFont = SelectObject(hdc, hFont_);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, theme.text());
+
+    wchar_t text[160]{};
+    if (chrome.isCombo) {
+        int sel = static_cast<int>(SendMessageW(hwnd, CB_GETCURSEL, 0, 0));
+        if (sel >= 0 && SendMessageW(hwnd, CB_GETLBTEXTLEN, sel, 0) < 160)
+            SendMessageW(hwnd, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(text));
+
+        int chevronW = scale(22);
+        RECT textRc{rc.left + scale(10), rc.top, rc.right - chevronW, rc.bottom};
+        DrawTextW(hdc, text, -1, &textRc,
+                  DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        // Chevron, drawn rather than taken from a font so it lines up at any DPI.
+        int cx = rc.right - chevronW / 2 - scale(4);
+        int cy = (rc.top + rc.bottom) / 2 - scale(1);
+        int arm = scale(4);
+        HPEN pen = CreatePen(PS_SOLID, std::max(1, scale(1)), theme.dimText());
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+        POINT chevron[3] = {{cx - arm, cy - arm / 2},
+                            {cx, cy + arm / 2},
+                            {cx + arm, cy - arm / 2}};
+        Polyline(hdc, chevron, 3);
+        SelectObject(hdc, oldPen);
+        DeleteObject(pen);
+    } else {
+        GetWindowTextW(hwnd, text, ARRAYSIZE(text));
+        DrawTextW(hdc, text, -1, &rc,
+                  DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+    }
+
+    SelectObject(hdc, oldFont);
+    EndPaint(hwnd, &ps);
+}
+
+void MainWindow::paintSearchFrame(HDC hdc) {
+    if (IsRectEmpty(&searchFrame_)) return;
+    Theme& theme = Theme::instance();
+
+    HBRUSH fill = CreateSolidBrush(theme.field());
+    FillRect(hdc, &searchFrame_, fill);
+    DeleteObject(fill);
+
+    // Same border as the two painted controls, so the row reads as one piece.
+    HBRUSH frame = CreateSolidBrush(GetFocus() == hSearch_ ? theme.accent()
+                                                           : theme.fieldBorder());
+    FrameRect(hdc, &searchFrame_, frame);
+    DeleteObject(frame);
 }
 
 void MainWindow::applyRowHeight() {
@@ -334,9 +483,9 @@ void MainWindow::applyTheme() {
     // highlight, soft selection fill and thin scrollbars.
     SetWindowTheme(hList_, explorer, nullptr);
     if (hHeader_) SetWindowTheme(hHeader_, theme.itemsViewThemeName(), nullptr);
-    SetWindowTheme(hRefresh_, explorer, nullptr);
-    SetWindowTheme(hAgent_, theme.dark() ? L"DarkMode_CFD" : L"CFD", nullptr);
-    SetWindowTheme(hSearch_, theme.dark() ? L"DarkMode_CFD" : L"CFD", nullptr);
+    // The button and the agent list draw their own chrome, so they need no
+    // theme class; only their drop-down list is still system-drawn.
+    SetWindowTheme(hAgent_, explorer, nullptr);
     tree_.applyTheme(explorer, theme.surface(), theme.text());
 
     ListView_SetBkColor(hList_, theme.surface());
@@ -368,6 +517,18 @@ void MainWindow::setupColumns() {
     }
 }
 
+int MainWindow::textHeight() const {
+    int height = scale(16);
+    if (HDC dc = GetDC(hwnd_)) {
+        HGDIOBJ old = SelectObject(dc, hFont_);
+        TEXTMETRICW tm{};
+        if (GetTextMetricsW(dc, &tm)) height = tm.tmHeight;
+        SelectObject(dc, old);
+        ReleaseDC(hwnd_, dc);
+    }
+    return height;
+}
+
 int MainWindow::scale(int v) const {
     return static_cast<int>(std::lround(v * dpi_ / 96.0));
 }
@@ -395,7 +556,6 @@ void MainWindow::layout() {
 
     int m = scale(12);
     int gap = scale(8);
-    int toolH = scale(30);
     int statusH = scale(20);
 
     int refreshW = scale(88);
@@ -405,11 +565,28 @@ void MainWindow::layout() {
     int searchW = cx - m * 2 - refreshW - agentW - gap * 2;
     if (searchW < scale(120)) searchW = scale(120);
 
-    MoveWindow(hSearch_, m, y, searchW, toolH, TRUE);
-    // A drop-down list draws its closed state at the control height but sizes
-    // the popup from the window height, so it needs room for both.
-    MoveWindow(hAgent_, m + searchW + gap, y, agentW, toolH + scale(200), TRUE);
+    // A drop-down list ignores the height it is given and shrinks itself to the
+    // one it derives from its item height, which is why the three controls used
+    // to end up different sizes. Size the list first, then let the edit and the
+    // button adopt whatever height it settled on.
+    int fieldH = textHeight() + scale(8);
+    SendMessageW(hAgent_, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), fieldH);
+    SendMessageW(hAgent_, CB_SETITEMHEIGHT, 0, textHeight() + scale(6));
+    MoveWindow(hAgent_, m + searchW + gap, y, agentW, fieldH + scale(220), TRUE);
+
+    RECT agentRc{};
+    GetWindowRect(hAgent_, &agentRc);
+    int toolH = std::max(scale(20), static_cast<int>(agentRc.bottom - agentRc.top));
+
     MoveWindow(hRefresh_, cx - m - refreshW, y, refreshW, toolH, TRUE);
+
+    // The edit itself is borderless and sits inside a frame the parent paints,
+    // which is what lets all three controls share one border.
+    searchFrame_ = RECT{m, y, m + searchW, y + toolH};
+    int inset = std::max(1, scale(1));
+    MoveWindow(hSearch_, searchFrame_.left + inset + scale(7),
+               searchFrame_.top + (toolH - textHeight()) / 2,
+               searchW - inset * 2 - scale(14), textHeight(), TRUE);
 
     int top = y + toolH + gap + scale(4);
     int statusY = cy - m / 2 - statusH;
@@ -453,6 +630,10 @@ void MainWindow::onCommand(WPARAM wParam, LPARAM lParam) {
     switch (id) {
     case IDC_SEARCH:
         if (code == EN_CHANGE) applyFilter();
+        // The frame is drawn by the parent, so it has to be repainted when the
+        // field gains or loses focus.
+        if (code == EN_SETFOCUS || code == EN_KILLFOCUS)
+            InvalidateRect(hwnd_, &searchFrame_, TRUE);
         break;
     case IDC_AGENT:
         if (code == CBN_SELCHANGE) applyFilter();

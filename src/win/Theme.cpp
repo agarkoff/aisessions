@@ -74,7 +74,7 @@ Theme& Theme::instance() {
 
 bool Theme::refresh() {
     bool now = readSystemDarkMode();
-    if (now == dark_ && (bgBrush_ || surfaceBrush_)) return false;
+    if (now == dark_ && (bgBrush_ || surfaceBrush_ || fieldBrush_)) return false;
     bool changed = now != dark_;
     dark_ = now;
     releaseBrushes();
@@ -84,6 +84,7 @@ bool Theme::refresh() {
 void Theme::releaseBrushes() {
     if (bgBrush_) { DeleteObject(bgBrush_); bgBrush_ = nullptr; }
     if (surfaceBrush_) { DeleteObject(surfaceBrush_); surfaceBrush_ = nullptr; }
+    if (fieldBrush_) { DeleteObject(fieldBrush_); fieldBrush_ = nullptr; }
 }
 
 COLORREF Theme::background() const {
@@ -101,6 +102,19 @@ COLORREF Theme::dimText() const {
 COLORREF Theme::border() const {
     return dark_ ? RGB(0x3d, 0x3d, 0x3d) : RGB(0xdc, 0xdc, 0xdc);
 }
+COLORREF Theme::field() const {
+    return dark_ ? RGB(0x33, 0x33, 0x33) : RGB(0xff, 0xff, 0xff);
+}
+COLORREF Theme::fieldBorder() const {
+    return dark_ ? RGB(0x4a, 0x4a, 0x4a) : RGB(0xc4, 0xc4, 0xc4);
+}
+COLORREF Theme::fieldHover() const {
+    return dark_ ? RGB(0x3d, 0x3d, 0x3d) : RGB(0xef, 0xef, 0xef);
+}
+COLORREF Theme::fieldPressed() const {
+    return dark_ ? RGB(0x4a, 0x4a, 0x4a) : RGB(0xe0, 0xe0, 0xe0);
+}
+
 COLORREF Theme::accent() const {
     DWORD argb = 0;
     BOOL opaque = FALSE;
@@ -117,6 +131,11 @@ HBRUSH Theme::backgroundBrush() {
 HBRUSH Theme::surfaceBrush() {
     if (!surfaceBrush_) surfaceBrush_ = CreateSolidBrush(surface());
     return surfaceBrush_;
+}
+
+HBRUSH Theme::fieldBrush() {
+    if (!fieldBrush_) fieldBrush_ = CreateSolidBrush(field());
+    return fieldBrush_;
 }
 
 const wchar_t* Theme::explorerThemeName() const {

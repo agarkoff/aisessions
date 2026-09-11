@@ -309,6 +309,12 @@ int wmain(int argc, wchar_t** argv) {
         }
     } else if (cmd == L"count") {
         printf("%d\n", static_cast<int>(SendMessageW(list, LVM_GETITEMCOUNT, 0, 0)));
+    } else if (cmd == L"combo") {
+        HWND combo = childById(main, 102);
+        printf("items=%d cursel=%d dropped=%d\n",
+               static_cast<int>(SendMessageW(combo, CB_GETCOUNT, 0, 0)),
+               static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0)),
+               static_cast<int>(SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)));
     } else if (cmd == L"treecount") {
         // Grows when a node expands, so it shows whether one click was enough.
         HWND tree = childByClass(main, L"SysTreeView32");

@@ -25,6 +25,14 @@ public:
     bool translateAccelerator(MSG& msg);
 
 private:
+    // Hover/pressed state for a control whose chrome we paint ourselves.
+    struct FlatChrome {
+        MainWindow* owner = nullptr;
+        bool isCombo = false;
+        bool hot = false;
+        bool pressed = false;
+    };
+
     // UTF-16 projection of a Session, built once per load so filtering and
     // list filling never re-convert or re-lowercase the UTF-8 originals.
     struct SessionView {
@@ -57,7 +65,12 @@ private:
     void setupColumns();
     void applyTheme();
     void applyRowHeight();
+    static LRESULT CALLBACK flatChromeProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                           LPARAM lParam, UINT_PTR id, DWORD_PTR data);
+    void paintFlatChrome(HWND hwnd, FlatChrome& chrome);
+    void paintSearchFrame(HDC hdc);
     void layout();
+    int textHeight() const;    // one line in the current font
     int scale(int v) const;    // 96-dpi units -> physical pixels
     int unscale(int v) const;  // physical pixels -> 96-dpi units
     void rescaleGeometry(UINT fromDpi, UINT toDpi);
@@ -95,6 +108,10 @@ private:
     HICON hIconBig_ = nullptr;
     HICON hIconSmall_ = nullptr;
     HIMAGELIST hRowSpacer_ = nullptr;  // sets the list's row height
+
+    FlatChrome refreshChrome_;
+    FlatChrome agentChrome_;
+    RECT searchFrame_{};  // frame the parent paints around the borderless edit
 
     ShellTree tree_;
 

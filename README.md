@@ -25,6 +25,12 @@ The project transcripts run to hundreds of megabytes, so they are scanned in
   closes it, while a click on the expando toggles it and leaves the selection
   alone — matching the navigation pane. The control reports the hit reliably
   but does not act on it, so both gestures are applied explicitly.
+* The search box, the agent list and the button draw their own chrome. Left to
+  the system they came out three different heights — a drop-down list ignores
+  the height it is given and shrinks to one derived from its item height — and
+  the shaded combo and button looked dated beside an Explorer-themed list. They
+  now share one flat frame, one height taken from the font, and hover, pressed
+  and focus states in both palettes.
 * Theme follows the Windows app mode. `AISESSIONS_THEME=dark|light` overrides it.
 * `AISESSIONS_TRACE=<file>` logs the shell control's callbacks. Those callbacks
   are the only visible evidence of what a gesture did, and they fire for real

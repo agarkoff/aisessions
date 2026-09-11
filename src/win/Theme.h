@@ -23,8 +23,16 @@ public:
     COLORREF border() const;
     COLORREF accent() const;       // toast fill
 
+    // Toolbar chrome, drawn by hand so the search box, the agent list and the
+    // button share one flat frame instead of three different system looks.
+    COLORREF field() const;
+    COLORREF fieldBorder() const;
+    COLORREF fieldHover() const;
+    COLORREF fieldPressed() const;
+
     HBRUSH backgroundBrush();
     HBRUSH surfaceBrush();
+    HBRUSH fieldBrush();
 
     // Name to hand SetWindowTheme / INameSpaceTreeControl::SetTheme.
     const wchar_t* explorerThemeName() const;
@@ -47,4 +55,5 @@ private:
     bool dark_ = false;
     HBRUSH bgBrush_ = nullptr;
     HBRUSH surfaceBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
 };
