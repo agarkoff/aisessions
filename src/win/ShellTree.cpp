@@ -1,4 +1,5 @@
 #include "ShellTree.h"
+#include "Trace.h"
 
 #include <commctrl.h>
 #include <knownfolders.h>
@@ -17,16 +18,15 @@ bool ShellTree::create(HWND parent, const RECT& rc) {
     if (FAILED(hr) || !control_) return false;
 
     RECT r = rc;
-    // NSTCS_SINGLECLICKEXPAND matches the Explorer navigation pane, where one
-    // click on a folder both selects and expands it; without it the node only
-    // opens on a second click or on the expando.
+    // Single-click expansion is done in OnItemClick rather than with
+    // NSTCS_SINGLECLICKEXPAND: that style also claims clicks on the expando,
+    // leaving no way to collapse a node again.
     //
-    // No NSTCS_SPRINGEXPAND: that expands - and moves the selection to -
+    // No NSTCS_SPRINGEXPAND either: that expands - and moves the selection to -
     // whatever the pointer merely rests on, silently re-filtering the list.
     const NSTCSTYLE style = NSTCS_HASEXPANDOS | NSTCS_ROOTHASEXPANDO
-                          | NSTCS_SINGLECLICKEXPAND | NSTCS_FULLROWSELECT
-                          | NSTCS_SHOWSELECTIONALWAYS | NSTCS_TABSTOP
-                          | NSTCS_NOINFOTIP | NSTCS_EVENHEIGHT;
+                          | NSTCS_FULLROWSELECT | NSTCS_SHOWSELECTIONALWAYS
+                          | NSTCS_TABSTOP | NSTCS_NOINFOTIP | NSTCS_EVENHEIGHT;
     hr = control_->Initialize(parent, &r, style);
     if (FAILED(hr)) {
         control_->Release();
@@ -177,7 +177,34 @@ IFACEMETHODIMP ShellTree::OnSelectionChanged(IShellItemArray* selection) {
     return S_OK;
 }
 
-IFACEMETHODIMP ShellTree::OnItemClick(IShellItem*, NSTCEHITTEST, NSTCECLICKTYPE) { return S_OK; }
+IFACEMETHODIMP ShellTree::OnItemClick(IShellItem* psi, NSTCEHITTEST hit,
+                                      NSTCECLICKTYPE click) {
+    userDriven_ = true;
+    traceW(L"OnItemClick hit=0x%X click=0x%X", static_cast<unsigned>(hit),
+           static_cast<unsigned>(click));
+
+    if (!control_ || !psi || !ISLBUTTON(click) || ISDBLCLICK(click)) return S_OK;
+
+    // Both gestures are driven from here rather than left to the control: it
+    // reports the hit reliably but does not act on it, so neither the expando
+    // nor a click on the label opened anything on its own.
+    //
+    // Explorer's navigation pane semantics: the expando toggles, while a click
+    // on the label or icon only ever opens a folder, never closes it.
+    if (hit & NSTCEHT_ONITEMBUTTON) {
+        NSTCITEMSTATE state = 0;
+        control_->GetItemState(psi, NSTCIS_EXPANDED, &state);
+        bool expanded = (state & NSTCIS_EXPANDED) != 0;
+        HRESULT hr = control_->SetItemState(psi, NSTCIS_EXPANDED,
+                                            expanded ? 0 : NSTCIS_EXPANDED);
+        traceW(L"  toggle expanded=%d -> hr=0x%08X", expanded ? 1 : 0,
+               static_cast<unsigned>(hr));
+    } else if (hit & (NSTCEHT_ONITEMLABEL | NSTCEHT_ONITEMICON)) {
+        HRESULT hr = control_->SetItemState(psi, NSTCIS_EXPANDED, NSTCIS_EXPANDED);
+        traceW(L"  expand -> hr=0x%08X", static_cast<unsigned>(hr));
+    }
+    return S_OK;
+}
 IFACEMETHODIMP ShellTree::OnPropertyItemCommit(IShellItem*) { return S_OK; }
 IFACEMETHODIMP ShellTree::OnItemStateChanging(IShellItem*, NSTCITEMSTATE, NSTCITEMSTATE) { return S_OK; }
 IFACEMETHODIMP ShellTree::OnItemStateChanged(IShellItem*, NSTCITEMSTATE, NSTCITEMSTATE) { return S_OK; }

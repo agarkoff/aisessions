@@ -177,6 +177,42 @@ void msgClick(HWND target, int x, int y) {
     PostMessageW(target, WM_LBUTTONUP, 0, lp);
 }
 
+// Some shell controls only raise their COM events for genuine input, so a
+// posted WM_LBUTTONDOWN cannot exercise them. This drives the real pointer,
+// then puts it back where the user left it.
+bool realClick(HWND main, HWND target, int x, int y) {
+    POINT restore{};
+    GetCursorPos(&restore);
+
+    DWORD dummy = 0;
+    DWORD foreground = GetWindowThreadProcessId(GetForegroundWindow(), &dummy);
+    DWORD self = GetCurrentThreadId();
+    AttachThreadInput(self, foreground, TRUE);
+    SetForegroundWindow(main);
+    AttachThreadInput(self, foreground, FALSE);
+    Sleep(250);
+
+    // Without the foreground window the click lands in whatever is on top
+    // instead, which would otherwise look like the app ignoring it.
+    if (GetForegroundWindow() != main) {
+        fwprintf(stderr, L"ERROR: could not bring the window forward; "
+                         L"click would have gone elsewhere\n");
+        return false;
+    }
+
+    POINT pt{x, y};
+    ClientToScreen(target, &pt);
+    SetCursorPos(pt.x, pt.y);
+    Sleep(120);
+    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+    Sleep(60);
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    Sleep(350);
+
+    SetCursorPos(restore.x, restore.y);
+    return true;
+}
+
 bool savePng(HBITMAP bmp, const std::wstring& path) {
     UINT num = 0, size = 0;
     Gdiplus::GetImageEncodersSize(&num, &size);
@@ -277,6 +313,28 @@ int wmain(int argc, wchar_t** argv) {
         // Grows when a node expands, so it shows whether one click was enough.
         HWND tree = childByClass(main, L"SysTreeView32");
         printf("%d\n", tree ? static_cast<int>(SendMessageW(tree, TVM_GETCOUNT, 0, 0)) : -1);
+    } else if (cmd == L"treestate") {
+        // HTREEITEMs are returned by value and fed straight back, so this needs
+        // no pointer to cross the process boundary.
+        HWND tree = childByClass(main, L"SysTreeView32");
+        HTREEITEM root = tree ? reinterpret_cast<HTREEITEM>(
+            SendMessageW(tree, TVM_GETNEXTITEM, TVGN_ROOT, 0)) : nullptr;
+        if (!root) {
+            printf("no tree\n");
+        } else {
+            int row = 0;
+            for (HTREEITEM it = root; it; it = reinterpret_cast<HTREEITEM>(
+                     SendMessageW(tree, TVM_GETNEXTITEM, TVGN_NEXTVISIBLE,
+                                  reinterpret_cast<LPARAM>(it)))) {
+                UINT state = static_cast<UINT>(SendMessageW(
+                    tree, TVM_GETITEMSTATE, reinterpret_cast<WPARAM>(it),
+                    TVIS_EXPANDED | TVIS_SELECTED));
+                printf("  row %-2d expanded=%d selected=%d\n", row++,
+                       (state & TVIS_EXPANDED) ? 1 : 0,
+                       (state & TVIS_SELECTED) ? 1 : 0);
+                if (row > 40) break;
+            }
+        }
     } else if (cmd == L"status") {
         printf("%s\n", narrow(textOf(status)).c_str());
     } else if (cmd == L"gettext" && argc > 2) {
@@ -328,6 +386,33 @@ int wmain(int argc, wchar_t** argv) {
         ShowWindow(main, SW_MINIMIZE);
     } else if (cmd == L"refresh") {
         notifyParent(main, childById(main, 103), BN_CLICKED);
+    } else if (cmd == L"treeclick" && argc > 2) {
+        // Row position is derived from the control's own item height, so a
+        // window that moved or scrolled cannot invalidate the coordinates.
+        HWND tree = childByClass(main, L"SysTreeView32");
+        int h = tree ? static_cast<int>(SendMessageW(tree, TVM_GETITEMHEIGHT, 0, 0)) : 0;
+        if (h <= 0) {
+            fwprintf(stderr, L"ERROR: no tree\n");
+            rc = 1;
+        } else {
+            int row = _wtoi(argv[2]);
+            bool chevron = argc > 3 && std::wstring(argv[3]) == L"chevron";
+            int y = h * row + h / 2;
+            int x = chevron ? h + h / 4 : h * 4;
+            printf("itemheight=%d click at %d,%d\n", h, x, y);
+            realClick(main, tree, x, y);
+        }
+    } else if (cmd == L"move" && argc > 5) {
+        SetWindowPos(main, nullptr, _wtoi(argv[2]), _wtoi(argv[3]),
+                     _wtoi(argv[4]), _wtoi(argv[5]), SWP_NOZORDER | SWP_NOACTIVATE);
+    } else if (cmd == L"realclick" && argc > 4) {
+        HWND target = childByClass(main, argv[2]);
+        if (!target) {
+            fwprintf(stderr, L"ERROR: no child matching '%s'\n", argv[2]);
+            rc = 1;
+        } else {
+            realClick(main, target, _wtoi(argv[3]), _wtoi(argv[4]));
+        }
     } else if ((cmd == L"click" || cmd == L"hover") && argc > 4) {
         HWND target = childByClass(main, argv[2]);
         if (!target) {

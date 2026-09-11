@@ -35,6 +35,7 @@ add_executable(aisessions
   src/win/ShellTree.cpp
   src/win/Theme.h
   src/win/Theme.cpp
+  src/win/Trace.h
   src/win/ToastWindow.h
   src/win/ToastWindow.cpp
   src/win/StrUtil.h
