@@ -314,6 +314,13 @@ void MainWindow::createChildren() {
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_REFRESH)),
         nullptr, nullptr);
 
+    // Bulk removal of the visible sessions whose transcript is gone. Disabled
+    // until the current view actually contains some.
+    hPrune_ = CreateWindowExW(0, L"BUTTON", L"Delete stale",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | WS_DISABLED,
+        0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRUNE)),
+        nullptr, nullptr);
+
     // The real Explorer navigation pane: drives, folders, shell icons, lazy
     // expansion - all handled by the shell rather than reimplemented here.
     RECT treeRc{0, 0, 0, 0};
@@ -341,9 +348,12 @@ void MainWindow::createChildren() {
         nullptr, nullptr);
 
     refreshChrome_ = {this, false, false, false};
+    pruneChrome_ = {this, false, false, false};
     agentChrome_ = {this, true, false, false};
     SetWindowSubclass(hRefresh_, &MainWindow::flatChromeProc, 1,
                       reinterpret_cast<DWORD_PTR>(&refreshChrome_));
+    SetWindowSubclass(hPrune_, &MainWindow::flatChromeProc, 1,
+                      reinterpret_cast<DWORD_PTR>(&pruneChrome_));
     SetWindowSubclass(hAgent_, &MainWindow::flatChromeProc, 1,
                       reinterpret_cast<DWORD_PTR>(&agentChrome_));
 
@@ -413,9 +423,11 @@ void MainWindow::paintFlatChrome(HWND hwnd, FlatChrome& chrome) {
     GetClientRect(hwnd, &rc);
     Theme& theme = Theme::instance();
 
+    bool enabled = IsWindowEnabled(hwnd) != FALSE;
     bool dropped = chrome.isCombo &&
                    SendMessageW(hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0;
-    COLORREF fill = (chrome.pressed || dropped) ? theme.fieldPressed()
+    COLORREF fill = !enabled                    ? theme.background()
+                  : (chrome.pressed || dropped) ? theme.fieldPressed()
                   : chrome.hot                  ? theme.fieldHover()
                                                 : theme.field();
 
@@ -430,7 +442,7 @@ void MainWindow::paintFlatChrome(HWND hwnd, FlatChrome& chrome) {
 
     HGDIOBJ oldFont = SelectObject(hdc, hFont_);
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, theme.text());
+    SetTextColor(hdc, enabled ? theme.text() : theme.dimText());
 
     wchar_t text[160]{};
     if (chrome.isCombo) {
@@ -514,7 +526,7 @@ void MainWindow::applyTheme() {
 }
 
 void MainWindow::applyFonts() {
-    HWND children[] = {hSearch_, hAgent_, hRefresh_, hList_, hStatus_, tree_.handle()};
+    HWND children[] = {hSearch_, hAgent_, hRefresh_, hPrune_, hList_, hStatus_, tree_.handle()};
     for (HWND h : children) {
         if (h) SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFont_), TRUE);
     }
@@ -577,10 +589,11 @@ void MainWindow::layout() {
     int statusH = scale(20);
 
     int refreshW = scale(88);
+    int pruneW = scale(108);
     int agentW = scale(150);
 
     int y = m;
-    int searchW = cx - m * 2 - refreshW - agentW - gap * 2;
+    int searchW = cx - m * 2 - refreshW - pruneW - agentW - gap * 3;
     if (searchW < scale(120)) searchW = scale(120);
 
     // A drop-down list ignores the height it is given and shrinks itself to the
@@ -596,7 +609,8 @@ void MainWindow::layout() {
     GetWindowRect(hAgent_, &agentRc);
     int toolH = std::max(scale(20), static_cast<int>(agentRc.bottom - agentRc.top));
 
-    MoveWindow(hRefresh_, cx - m - refreshW, y, refreshW, toolH, TRUE);
+    MoveWindow(hPrune_, cx - m - pruneW, y, pruneW, toolH, TRUE);
+    MoveWindow(hRefresh_, cx - m - pruneW - gap - refreshW, y, refreshW, toolH, TRUE);
 
     // The edit itself is borderless and sits inside a frame the parent paints,
     // which is what lets all three controls share one border.
@@ -661,7 +675,63 @@ void MainWindow::onCommand(WPARAM wParam, LPARAM lParam) {
     case IDC_REFRESH:
         if (code == BN_CLICKED) loadSessionsAsync();
         break;
+    case IDC_PRUNE:
+        if (code == BN_CLICKED) deleteStaleSessions();
+        break;
     }
+}
+
+void MainWindow::updatePruneButton() {
+    bool anyStale = false;
+    for (int index : filtered_) {
+        if (!all_[index].resumable) { anyStale = true; break; }
+    }
+    if ((IsWindowEnabled(hPrune_) != FALSE) != anyStale) {
+        EnableWindow(hPrune_, anyStale);
+        InvalidateRect(hPrune_, nullptr, FALSE);
+    }
+}
+
+void MainWindow::deleteStaleSessions() {
+    // "Stale" is the same thing the list dims: a Claude session whose
+    // transcript has been pruned. Scoped to the current view so the folder
+    // tree and the search box narrow what gets cleaned up.
+    std::vector<std::string> ids;
+    for (int index : filtered_) {
+        const Session& s = all_[index];
+        if (s.agent == "Claude" && !s.resumable) ids.push_back(s.sessionId);
+    }
+    if (ids.empty()) return;
+
+    std::wstring prompt =
+        L"Delete " + std::to_wstring(ids.size()) + L" stale session" +
+        (ids.size() == 1 ? L"" : L"s") + L" shown in the list?\n\n"
+        L"These have no transcript left, so they cannot be resumed; only their "
+        L"lines in history.jsonl remain. The file is rewritten once, with the "
+        L"previous version kept as history.jsonl.bak.";
+    if (MessageBoxW(hwnd_, prompt.c_str(), L"Delete stale sessions",
+                    MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+        return;
+
+    HCURSOR previous = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    long long freed = 0;
+    std::wstring error;
+    bool ok = SessionActions::deleteClaudeSessions(ids, freed, error);
+    SetCursor(previous);
+
+    if (!ok) {
+        MessageBoxW(hwnd_, error.c_str(), L"Delete stale sessions", MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    std::wstring freedText = utf8to16(Session::formatSize(freed));
+    if (freed <= 0) freedText = L"0 B";
+    std::wstring done = L"Deleted " + std::to_wstring(ids.size()) + L" stale session" +
+                        (ids.size() == 1 ? L"" : L"s") + L".\n\nFreed " + freedText +
+                        L" in history.jsonl.";
+    setStatus(L"Deleted " + std::to_wstring(ids.size()) + L" stale sessions, freed " + freedText);
+    loadSessionsAsync();
+    MessageBoxW(hwnd_, done.c_str(), L"Delete stale sessions", MB_ICONINFORMATION | MB_OK);
 }
 
 //--------------------------------------------------------------------
@@ -1140,6 +1210,7 @@ void MainWindow::applyFilter() {
     sortFiltered();
     fillList();
     showSortIndicator();
+    updatePruneButton();
     setStatus(std::to_wstring(filtered_.size()) + L" / " +
               std::to_wstring(views_.size()) + L" sessions");
 }

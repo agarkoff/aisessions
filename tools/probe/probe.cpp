@@ -440,6 +440,15 @@ int wmain(int argc, wchar_t** argv) {
         ShowWindow(main, SW_MINIMIZE);
     } else if (cmd == L"refresh") {
         notifyParent(main, childById(main, 103), BN_CLICKED);
+    } else if (cmd == L"press" && argc > 2) {
+        HWND button = childById(main, _wtoi(argv[2]));
+        if (!button) {
+            fwprintf(stderr, L"ERROR: no control with id %s\n", argv[2]);
+            rc = 1;
+        } else {
+            printf("enabled=%d\n", IsWindowEnabled(button) ? 1 : 0);
+            if (IsWindowEnabled(button)) notifyParent(main, button, BN_CLICKED);
+        }
     } else if (cmd == L"treeclick" && argc > 2) {
         // Row position is derived from the control's own item height, so a
         // window that moved or scrolled cannot invalidate the coordinates.

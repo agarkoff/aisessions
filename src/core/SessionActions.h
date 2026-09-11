@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 #include "Session.h"
 
@@ -19,5 +20,13 @@ bool resumeInTerminal(const Session& session, std::wstring& error);
 // - and its entries are dropped from history.jsonl, which is rewritten
 // atomically with the original kept as history.jsonl.bak.
 bool deleteSession(const Session& session, std::wstring& error);
+
+// Removes several Claude sessions with a single rewrite of history.jsonl.
+// Meant for the stale ones - those with no transcript left - where a
+// per-session rewrite of a multi-megabyte file would add up. `freedBytes`
+// receives how much smaller history.jsonl got plus the size of any transcript
+// that was moved to the Recycle Bin.
+bool deleteClaudeSessions(const std::vector<std::string>& sessionIds,
+                          long long& freedBytes, std::wstring& error);
 
 } // namespace SessionActions

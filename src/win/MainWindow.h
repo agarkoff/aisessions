@@ -52,6 +52,7 @@ private:
     static constexpr int IDC_SEARCH = 101;
     static constexpr int IDC_AGENT = 102;
     static constexpr int IDC_REFRESH = 103;
+    static constexpr int IDC_PRUNE = 104;
     static constexpr int IDC_LIST = 105;
     static constexpr int IDC_STATUS = 106;
     static constexpr int IDM_COPY = 200;
@@ -91,6 +92,8 @@ private:
     void copySessionIds(const std::vector<int>& rows);
     void resumeSessions(const std::vector<int>& rows);
     void deleteSessions(const std::vector<int>& rows);
+    void deleteStaleSessions();  // every visible row with no transcript left
+    void updatePruneButton();
 
     void onColumnClick(int column);
     void sortFiltered();
@@ -117,6 +120,7 @@ private:
     HWND hSearch_ = nullptr;
     HWND hAgent_ = nullptr;
     HWND hRefresh_ = nullptr;
+    HWND hPrune_ = nullptr;
     HWND hList_ = nullptr;
     HWND hHeader_ = nullptr;
     HWND hStatus_ = nullptr;
@@ -126,6 +130,7 @@ private:
     HIMAGELIST hRowSpacer_ = nullptr;  // sets the list's row height
 
     FlatChrome refreshChrome_;
+    FlatChrome pruneChrome_;
     FlatChrome agentChrome_;
     RECT searchFrame_{};  // frame the parent paints around the borderless edit
 

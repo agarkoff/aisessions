@@ -8,6 +8,13 @@ click on a column header sorts by it; a second click flips the direction. The
 sort survives a restart, and the selection survives a re-sort or a narrower
 filter.
 
+The toolbar has **Refresh** and **Delete stale**. Delete stale removes every
+Claude session in the *current view* whose transcript has been pruned — the
+dimmed, unresumable ones — in a single rewrite of `history.jsonl`, and reports
+how much space it freed. It is disabled when the view holds none, so the folder
+tree and the search box scope what it cleans up. Because it is view-scoped, an
+accidental click cannot reach beyond what is on screen.
+
 Right-click a row (or press the menu key on the focused one) for actions that
 apply to the whole selection:
 

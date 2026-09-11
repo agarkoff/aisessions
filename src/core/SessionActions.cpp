@@ -10,6 +10,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -258,9 +259,10 @@ fs::path findClaudeTranscript(const std::string& sessionId) {
     return {};
 }
 
-// Rewrites history.jsonl without the session's entries, preserving every other
-// line byte for byte - including its original line ending.
-bool dropFromClaudeHistory(const std::string& sessionId, std::wstring& error) {
+// Rewrites history.jsonl without the given sessions' entries, preserving every
+// other line byte for byte - including its original line ending.
+bool dropFromClaudeHistory(const std::unordered_set<std::string>& sessionIds,
+                           std::wstring& error) {
     fs::path history = homePath() / L".claude" / L"history.jsonl";
     std::error_code ec;
     if (!fs::exists(history, ec)) return true;  // nothing to do
@@ -292,7 +294,7 @@ bool dropFromClaudeHistory(const std::string& sessionId, std::wstring& error) {
         if (!body.empty()) {
             mini::JValue root;
             if (mini::parse(std::string(body), root) && root.isObject())
-                drop = root.strOf("sessionId") == sessionId;
+                drop = sessionIds.count(root.strOf("sessionId")) > 0;
         }
         if (drop) removedAny = true;
         else kept.append(segment);
@@ -333,7 +335,7 @@ bool dropFromClaudeHistory(const std::string& sessionId, std::wstring& error) {
 bool deleteClaudeSession(const Session& session, std::wstring& error) {
     fs::path transcript = findClaudeTranscript(session.sessionId);
     if (!transcript.empty() && !recycle(transcript, error)) return false;
-    return dropFromClaudeHistory(session.sessionId, error);
+    return dropFromClaudeHistory({session.sessionId}, error);
 }
 
 bool deleteOpenCodeSession(const Session& session, std::wstring& error) {
@@ -398,6 +400,33 @@ bool SessionActions::resumeInTerminal(const Session& session, std::wstring& erro
     command += L" -d " + quotePath(directory) + L" " + resume;
 
     return launchConsole(command, directory, error);
+}
+
+bool SessionActions::deleteClaudeSessions(const std::vector<std::string>& sessionIds,
+                                          long long& freedBytes, std::wstring& error) {
+    freedBytes = 0;
+    if (sessionIds.empty()) return true;
+
+    std::error_code ec;
+    // Any transcript that does still exist goes to the Recycle Bin first, so a
+    // caller passing a mixed list is not silently unlinking data.
+    for (const std::string& id : sessionIds) {
+        fs::path transcript = findClaudeTranscript(id);
+        if (transcript.empty()) continue;
+        auto bytes = fs::file_size(transcript, ec);
+        if (!recycle(transcript, error)) return false;
+        if (!ec) freedBytes += static_cast<long long>(bytes);
+    }
+
+    fs::path history = homePath() / L".claude" / L"history.jsonl";
+    auto before = fs::file_size(history, ec);
+    if (ec) before = 0;
+    if (!dropFromClaudeHistory(
+            std::unordered_set<std::string>(sessionIds.begin(), sessionIds.end()), error))
+        return false;
+    auto after = fs::file_size(history, ec);
+    if (!ec && before > after) freedBytes += static_cast<long long>(before - after);
+    return true;
 }
 
 bool SessionActions::deleteSession(const Session& session, std::wstring& error) {
