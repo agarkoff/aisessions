@@ -199,10 +199,13 @@ bool bringForward(HWND main) {
     return true;
 }
 
-bool realClick(HWND main, HWND target, int x, int y) {
+bool realClick(HWND main, HWND target, int x, int y, WORD modifier = 0) {
     POINT restore{};
     GetCursorPos(&restore);
     if (!bringForward(main)) return false;
+
+    // Held for the whole click so Ctrl/Shift-click selection semantics apply.
+    if (modifier) keybd_event(static_cast<BYTE>(modifier), 0, 0, 0);
 
     POINT pt{x, y};
     ClientToScreen(target, &pt);
@@ -211,6 +214,7 @@ bool realClick(HWND main, HWND target, int x, int y) {
     mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
     Sleep(60);
     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    if (modifier) keybd_event(static_cast<BYTE>(modifier), 0, KEYEVENTF_KEYUP, 0);
     Sleep(350);
 
     SetCursorPos(restore.x, restore.y);
@@ -508,12 +512,20 @@ int wmain(int argc, wchar_t** argv) {
                      _wtoi(argv[4]), _wtoi(argv[5]), SWP_NOZORDER | SWP_NOACTIVATE);
     } else if (cmd == L"realclick" && argc > 4) {
         HWND target = childByClass(main, argv[2]);
+        WORD modifier = 0;
+        if (argc > 5) {
+            std::wstring mod = argv[5];
+            if (mod == L"ctrl") modifier = VK_CONTROL;
+            else if (mod == L"shift") modifier = VK_SHIFT;
+        }
         if (!target) {
             fwprintf(stderr, L"ERROR: no child matching '%s'\n", argv[2]);
             rc = 1;
         } else {
-            realClick(main, target, _wtoi(argv[3]), _wtoi(argv[4]));
+            realClick(main, target, _wtoi(argv[3]), _wtoi(argv[4]), modifier);
         }
+    } else if (cmd == L"selcount") {
+        printf("%d\n", static_cast<int>(SendMessageW(list, LVM_GETSELECTEDCOUNT, 0, 0)));
     } else if ((cmd == L"click" || cmd == L"hover") && argc > 4) {
         HWND target = childByClass(main, argv[2]);
         if (!target) {

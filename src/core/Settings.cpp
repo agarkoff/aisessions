@@ -56,6 +56,12 @@ Settings Settings::load() {
     if (root.get("col1")) s.col1 = clampWidth(root.intOf("col1"), s.col1, 20, 2000);
     if (root.get("col3")) s.col3 = clampWidth(root.intOf("col3"), s.col3, 20, 2000);
     if (root.get("col4")) s.col4 = clampWidth(root.intOf("col4"), s.col4, 20, 2000);
+    if (root.get("sortColumn")) {
+        long long c = root.intOf("sortColumn");
+        if (c >= 0 && c < 5) s.sortColumn = static_cast<int>(c);
+    }
+    if (const mini::JValue* v = root.get("sortDescending"); v && v->isBool())
+        s.sortDescending = v->b;
     return s;
 }
 
@@ -66,7 +72,9 @@ void Settings::save() const {
         "  \"col0\": " + std::to_string(col0) + ",\n"
         "  \"col1\": " + std::to_string(col1) + ",\n"
         "  \"col3\": " + std::to_string(col3) + ",\n"
-        "  \"col4\": " + std::to_string(col4) + "\n"
+        "  \"col4\": " + std::to_string(col4) + ",\n"
+        "  \"sortColumn\": " + std::to_string(sortColumn) + ",\n"
+        "  \"sortDescending\": " + (sortDescending ? "true" : "false") + "\n"
         "}\n";
 
     std::error_code ec;

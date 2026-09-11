@@ -44,6 +44,8 @@ MainWindow::MainWindow(const Settings& settings)
     colWidth_[1] = settings.col1;
     colWidth_[3] = settings.col3;
     colWidth_[4] = settings.col4;
+    sortColumn_ = settings.sortColumn;
+    sortDescending_ = settings.sortDescending;
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
 
@@ -309,7 +311,7 @@ void MainWindow::createChildren() {
 
     hList_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP
-        | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        | LVS_REPORT | LVS_SHOWSELALWAYS,
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LIST)),
         nullptr, nullptr);
 
@@ -683,62 +685,184 @@ void MainWindow::showListMenu(int x, int y) {
            GetForegroundWindow() == hwnd_ ? 1 : 0);
     if (row < 0) return;
 
+    // The list has already handled the right click the Explorer way: on an
+    // unselected row it becomes the sole selection, on a selected one the
+    // selection is kept. Either way the menu acts on the whole selection.
+    std::vector<int> rows = selectedRows();
+    if (rows.empty()) rows.push_back(row);
+    size_t n = rows.size();
+    std::wstring count = n > 1 ? L" (" + std::to_wstring(n) + L")" : L"";
+
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
-    AppendMenuW(menu, MF_STRING, IDM_COPY, L"Copy session ID\tCtrl+C");
-    AppendMenuW(menu, MF_STRING, IDM_RESUME, L"Resume in terminal");
+    AppendMenuW(menu, MF_STRING, IDM_COPY,
+                (L"Copy session ID" + std::wstring(n > 1 ? L"s" : L"") + count + L"\tCtrl+C").c_str());
+    AppendMenuW(menu, MF_STRING, IDM_RESUME, (L"Resume in terminal" + count).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, IDM_DELETE, L"Delete session\tDel");
+    AppendMenuW(menu, MF_STRING, IDM_DELETE,
+                (L"Delete session" + std::wstring(n > 1 ? L"s" : L"") + count + L"\tDel").c_str());
 
     int choice = static_cast<int>(TrackPopupMenuEx(
         menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
         x, y, hwnd_, nullptr));
     DestroyMenu(menu);
 
-    if (choice == IDM_COPY) copySessionId(row);
-    else if (choice == IDM_RESUME) resumeSession(row);
-    else if (choice == IDM_DELETE) deleteSession(row);
+    if (choice == IDM_COPY) copySessionIds(rows);
+    else if (choice == IDM_RESUME) resumeSessions(rows);
+    else if (choice == IDM_DELETE) deleteSessions(rows);
 }
 
-void MainWindow::resumeSession(int row) {
-    if (row < 0 || row >= static_cast<int>(filtered_.size())) return;
-    const Session& session = all_[filtered_[row]];
-
-    std::wstring error;
-    if (SessionActions::resumeInTerminal(session, error)) {
-        setStatus(L"Resuming " + views_[filtered_[row]].sessionId + L"...");
-        return;
+std::vector<int> MainWindow::selectedRows() const {
+    std::vector<int> rows;
+    int row = -1;
+    while ((row = static_cast<int>(SendMessageW(hList_, LVM_GETNEXTITEM,
+                                                static_cast<WPARAM>(row),
+                                                LVNI_SELECTED))) >= 0) {
+        if (row < static_cast<int>(filtered_.size())) rows.push_back(row);
     }
-    MessageBoxW(hwnd_, error.c_str(), L"Resume in terminal", MB_ICONWARNING | MB_OK);
+    return rows;
 }
 
-void MainWindow::deleteSession(int row) {
-    if (row < 0 || row >= static_cast<int>(filtered_.size())) return;
-    const SessionView& view = views_[filtered_[row]];
-    const Session& session = all_[filtered_[row]];
+void MainWindow::resumeSessions(const std::vector<int>& rows) {
+    if (rows.empty()) return;
 
-    std::wstring prompt =
-        L"Delete this session?\n\n" + view.title + L"\n" + view.sessionId + L"\n\n";
-    prompt += session.agent == "Claude"
-        ? L"The transcript goes to the Recycle Bin and the entry is removed from "
-          L"history.jsonl, which is backed up as history.jsonl.bak."
-        : L"This runs `opencode session delete` and cannot be undone.";
+    // Opening many terminals by accident is easy with Ctrl+A; ask past a few.
+    if (rows.size() > 3) {
+        std::wstring prompt = L"Open " + std::to_wstring(rows.size()) +
+                              L" terminal tabs, one per selected session?";
+        if (MessageBoxW(hwnd_, prompt.c_str(), L"Resume in terminal",
+                        MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+            return;
+    }
+
+    std::wstring errors;
+    size_t started = 0;
+    for (int row : rows) {
+        std::wstring error;
+        if (SessionActions::resumeInTerminal(all_[filtered_[row]], error)) ++started;
+        else errors += views_[filtered_[row]].sessionId + L": " + error + L"\n";
+    }
+
+    if (started == 1 && rows.size() == 1)
+        setStatus(L"Resuming " + views_[filtered_[rows[0]]].sessionId + L"...");
+    else
+        setStatus(L"Resuming " + std::to_wstring(started) + L" sessions...");
+    if (!errors.empty())
+        MessageBoxW(hwnd_, errors.c_str(), L"Resume in terminal", MB_ICONWARNING | MB_OK);
+}
+
+void MainWindow::deleteSessions(const std::vector<int>& rows) {
+    if (rows.empty()) return;
+
+    bool anyClaude = false, anyOpenCode = false;
+    for (int row : rows) {
+        const std::string& agent = all_[filtered_[row]].agent;
+        anyClaude |= agent == "Claude";
+        anyOpenCode |= agent == "OpenCode";
+    }
+
+    std::wstring prompt;
+    if (rows.size() == 1) {
+        const SessionView& view = views_[filtered_[rows[0]]];
+        prompt = L"Delete this session?\n\n" + view.title + L"\n" + view.sessionId + L"\n\n";
+    } else {
+        prompt = L"Delete " + std::to_wstring(rows.size()) + L" sessions?\n\n";
+        size_t shown = 0;
+        for (int row : rows) {
+            if (shown++ == 8) { prompt += L"...\n"; break; }
+            prompt += L"• " + views_[filtered_[row]].title + L"\n";
+        }
+        prompt += L"\n";
+    }
+    if (anyClaude)
+        prompt += L"Claude: the transcript goes to the Recycle Bin and the entry is "
+                  L"removed from history.jsonl, which is backed up as history.jsonl.bak.\n";
+    if (anyOpenCode)
+        prompt += L"OpenCode: this runs `opencode session delete` and cannot be undone.\n";
 
     if (MessageBoxW(hwnd_, prompt.c_str(), L"Delete session",
                     MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
         return;
 
     HCURSOR previous = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-    std::wstring error;
-    bool ok = SessionActions::deleteSession(session, error);
+    std::wstring errors;
+    size_t deleted = 0;
+    for (int row : rows) {
+        std::wstring error;
+        if (SessionActions::deleteSession(all_[filtered_[row]], error)) ++deleted;
+        else errors += views_[filtered_[row]].sessionId + L": " + error + L"\n";
+    }
     SetCursor(previous);
 
-    if (!ok) {
-        MessageBoxW(hwnd_, error.c_str(), L"Delete session", MB_ICONERROR | MB_OK);
-        return;
+    if (!errors.empty())
+        MessageBoxW(hwnd_, errors.c_str(), L"Delete session", MB_ICONERROR | MB_OK);
+    if (deleted == 1 && rows.size() == 1)
+        setStatus(L"Deleted " + views_[filtered_[rows[0]]].sessionId);
+    else
+        setStatus(L"Deleted " + std::to_wstring(deleted) + L" sessions");
+    if (deleted) loadSessionsAsync();
+}
+
+//--------------------------------------------------------------------
+// Sorting
+//--------------------------------------------------------------------
+
+void MainWindow::onColumnClick(int column) {
+    if (column < 0 || column >= 5) return;
+    if (column == sortColumn_) {
+        sortDescending_ = !sortDescending_;
+    } else {
+        sortColumn_ = column;
+        // Dates read naturally newest-first; text columns A to Z.
+        sortDescending_ = (column == 4);
     }
-    setStatus(L"Deleted " + view.sessionId);
-    loadSessionsAsync();
+    sortFiltered();
+    fillList();
+    showSortIndicator();
+    saveSettings();
+}
+
+void MainWindow::sortFiltered() {
+    auto text = [this](int index) -> const std::wstring& {
+        const SessionView& v = views_[index];
+        switch (sortColumn_) {
+        case 0: return v.agent;
+        case 1: return v.sessionId;
+        case 2: return v.title;
+        case 3: return v.model;
+        default: return v.updated;
+        }
+    };
+
+    auto less = [&](int a, int b) {
+        int order;
+        if (sortColumn_ == 4) {
+            long long ta = all_[a].updatedMs, tb = all_[b].updatedMs;
+            order = (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
+        } else {
+            const std::wstring& sa = text(a);
+            const std::wstring& sb = text(b);
+            order = CompareStringOrdinal(sa.c_str(), static_cast<int>(sa.size()),
+                                         sb.c_str(), static_cast<int>(sb.size()), TRUE)
+                    - CSTR_EQUAL;
+        }
+        return sortDescending_ ? order > 0 : order < 0;
+    };
+
+    // Stable, so rows that compare equal keep their newest-first order.
+    std::stable_sort(filtered_.begin(), filtered_.end(), less);
+}
+
+void MainWindow::showSortIndicator() {
+    if (!hHeader_) return;
+    for (int i = 0; i < 5; i++) {
+        HDITEMW item{};
+        item.mask = HDI_FORMAT;
+        if (!SendMessageW(hHeader_, HDM_GETITEMW, i, reinterpret_cast<LPARAM>(&item))) continue;
+        item.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+        if (i == sortColumn_) item.fmt |= sortDescending_ ? HDF_SORTDOWN : HDF_SORTUP;
+        SendMessageW(hHeader_, HDM_SETITEMW, i, reinterpret_cast<LPARAM>(&item));
+    }
 }
 
 void MainWindow::onFolderSelected(const std::wstring& path) {
@@ -759,10 +883,20 @@ LRESULT MainWindow::onNotify(LPARAM lParam) {
     if (hdr->hwndFrom == hList_) {
         if (hdr->code == LVN_KEYDOWN) {
             auto key = reinterpret_cast<const NMLVKEYDOWN*>(lParam);
-            int focused = static_cast<int>(SendMessageW(
-                hList_, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_FOCUSED));
-            if (key->wVKey == VK_DELETE) deleteSession(focused);
-            else if (key->wVKey == 'C' && GetKeyState(VK_CONTROL) < 0) copySessionId(focused);
+            if (key->wVKey == VK_DELETE) deleteSessions(selectedRows());
+            else if (key->wVKey == 'C' && GetKeyState(VK_CONTROL) < 0)
+                copySessionIds(selectedRows());
+            else if (key->wVKey == 'A' && GetKeyState(VK_CONTROL) < 0) {
+                LVITEMW all{};
+                all.state = LVIS_SELECTED;
+                all.stateMask = LVIS_SELECTED;
+                SendMessageW(hList_, LVM_SETITEMSTATE, static_cast<WPARAM>(-1),
+                             reinterpret_cast<LPARAM>(&all));
+            }
+            return 0;
+        }
+        if (hdr->code == LVN_COLUMNCLICK) {
+            onColumnClick(reinterpret_cast<const NMLISTVIEW*>(lParam)->iSubItem);
             return 0;
         }
         if (hdr->code == NM_CUSTOMDRAW) return onListCustomDraw(lParam);
@@ -951,12 +1085,19 @@ void MainWindow::applyFilter() {
         filtered_.push_back(i);
     }
 
+    sortFiltered();
     fillList();
+    showSortIndicator();
     setStatus(std::to_wstring(filtered_.size()) + L" / " +
               std::to_wstring(views_.size()) + L" sessions");
 }
 
 void MainWindow::fillList() {
+    // Rebuilding wipes the selection, so carry it over by session id: a re-sort
+    // or a narrower filter should not make the user pick their rows again.
+    std::vector<std::wstring> keep;
+    for (int row : selectedRows()) keep.push_back(views_[filtered_[row]].sessionId);
+
     // Filling row by row with painting enabled is what makes a few hundred
     // sessions feel slow, so suppress redraw for the whole batch.
     SendMessageW(hList_, WM_SETREDRAW, FALSE, 0);
@@ -966,9 +1107,12 @@ void MainWindow::fillList() {
     for (int row = 0; row < static_cast<int>(filtered_.size()); row++) {
         const SessionView& v = views_[filtered_[row]];
         LVITEMW item{};
-        item.mask = LVIF_TEXT;
+        item.mask = LVIF_TEXT | LVIF_STATE;
         item.iItem = row;
         item.pszText = const_cast<LPWSTR>(v.agent.c_str());
+        item.stateMask = LVIS_SELECTED;
+        if (std::find(keep.begin(), keep.end(), v.sessionId) != keep.end())
+            item.state = LVIS_SELECTED;
         int inserted = static_cast<int>(SendMessageW(hList_, LVM_INSERTITEMW, 0,
                                                      reinterpret_cast<LPARAM>(&item)));
         if (inserted < 0) continue;
@@ -1005,18 +1149,23 @@ std::wstring MainWindow::getSearchText() const {
 // Clipboard, status, settings
 //--------------------------------------------------------------------
 
-void MainWindow::copySessionId(int row) {
-    if (row < 0 || row >= static_cast<int>(filtered_.size())) return;
-    const std::wstring& sessionId = views_[filtered_[row]].sessionId;
-    if (sessionId.empty()) return;
+void MainWindow::copySessionIds(const std::vector<int>& rows) {
+    if (rows.empty()) return;
+
+    // One id per line, so a multi-selection pastes as a usable list.
+    std::wstring text;
+    for (int row : rows) {
+        if (!text.empty()) text += L"\r\n";
+        text += views_[filtered_[row]].sessionId;
+    }
 
     bool copied = false;
     if (OpenClipboard(hwnd_)) {
         EmptyClipboard();
-        size_t bytes = (sessionId.size() + 1) * sizeof(wchar_t);
+        size_t bytes = (text.size() + 1) * sizeof(wchar_t);
         if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
             if (void* dst = GlobalLock(hMem)) {
-                memcpy(dst, sessionId.c_str(), bytes);
+                memcpy(dst, text.c_str(), bytes);
                 GlobalUnlock(hMem);
                 // Ownership passes to the clipboard only on success.
                 if (SetClipboardData(CF_UNICODETEXT, hMem)) copied = true;
@@ -1030,7 +1179,9 @@ void MainWindow::copySessionId(int row) {
 
     // Confirmed in the status line: a pop-up would be out of proportion for a
     // menu command whose effect the user asked for explicitly.
-    setStatus(copied ? L"Copied " + sessionId : L"Could not copy to the clipboard");
+    if (!copied) setStatus(L"Could not copy to the clipboard");
+    else if (rows.size() == 1) setStatus(L"Copied " + text);
+    else setStatus(L"Copied " + std::to_wstring(rows.size()) + L" session IDs");
 }
 
 void MainWindow::setStatus(const std::wstring& text) {
@@ -1051,5 +1202,7 @@ void MainWindow::saveSettings() {
     settings_.col1 = unscale(colWidth_[1]);
     settings_.col3 = unscale(colWidth_[3]);
     settings_.col4 = unscale(colWidth_[4]);
+    settings_.sortColumn = sortColumn_;
+    settings_.sortDescending = sortDescending_;
     settings_.save();
 }

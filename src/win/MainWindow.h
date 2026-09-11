@@ -81,9 +81,15 @@ private:
     void onFolderSelected(const std::wstring& path);
     void showListMenu(int x, int y);
     int  rowUnderCursor(int screenX, int screenY) const;
-    void copySessionId(int row);
-    void resumeSession(int row);
-    void deleteSession(int row);
+    // Every action works on the whole selection.
+    std::vector<int> selectedRows() const;
+    void copySessionIds(const std::vector<int>& rows);
+    void resumeSessions(const std::vector<int>& rows);
+    void deleteSessions(const std::vector<int>& rows);
+
+    void onColumnClick(int column);
+    void sortFiltered();
+    void showSortIndicator();
     void onSplitterDown(LPARAM lParam);
     void onSplitterMove(LPARAM lParam);
     void onSplitterUp();
@@ -134,4 +140,6 @@ private:
     bool dragSplitter_ = false;
     int splitterX_ = 0;
     int colWidth_[5] = {80, 180, 0, 100, 132};
+    int sortColumn_ = 4;
+    bool sortDescending_ = true;
 };

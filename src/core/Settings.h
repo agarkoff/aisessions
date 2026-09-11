@@ -9,6 +9,9 @@ struct Settings {
     int col3 = 100;  // Model
     int col4 = 132;  // Updated ("yyyy-MM-dd HH:mm")
 
+    int sortColumn = 4;          // Updated
+    bool sortDescending = true;  // newest first
+
     static Settings load();
     void save() const;
 };

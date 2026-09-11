@@ -3,13 +3,20 @@
 Browser for Claude Code and OpenCode session history. Pure Win32 / C++20, no
 runtime dependencies — a single self-contained `aisessions.exe`.
 
-Right-click a row (or press the menu key on the focused one) for:
+Rows select the Explorer way — click, Ctrl+click, Shift+click, Ctrl+A — and a
+click on a column header sorts by it; a second click flips the direction. The
+sort survives a restart, and the selection survives a re-sort or a narrower
+filter.
 
-* **Copy session ID** (also `Ctrl+C`) — puts the id on the clipboard; the status
-  line confirms it.
-* **Resume in terminal** — opens a Windows Terminal tab in the session's
-  directory running `claude --resume <id>` or `opencode --session <id>`. A
-  directory that no longer exists falls back to the user profile.
+Right-click a row (or press the menu key on the focused one) for actions that
+apply to the whole selection:
+
+* **Copy session ID** (also `Ctrl+C`) — puts the ids on the clipboard, one per
+  line; the status line confirms it.
+* **Resume in terminal** — opens a Windows Terminal tab per selected session, in
+  its directory, running `claude --resume <id>` or `opencode --session <id>`. A
+  directory that no longer exists falls back to the user profile; more than
+  three tabs at once is confirmed first.
 
   Two details matter here. The agent runs as the tab's own process under the
   user's **default profile**, read from Windows Terminal's `settings.json`:
@@ -20,7 +27,8 @@ Right-click a row (or press the menu key on the focused one) for:
   `CLAUDE_CODE_CHILD_SESSION` and friends, and a session resumed with those
   still set believes it is a nested child and **turns transcript saving off**,
   so it would never be recorded and would disappear from this list.
-* **Delete session** (also the Del key) — asks first, then removes it. OpenCode
+* **Delete session** (also the Del key) — asks once for the whole selection,
+  listing what goes, then removes each. OpenCode
   goes through `opencode session delete`, the vendor's own command, which keeps
   the database consistent even while opencode is running. Claude has no such
   command, so its transcript is moved to the **Recycle Bin** and its entries are
@@ -90,7 +98,9 @@ probe [--pid N] treecount | treestate  node count / expanded+selected per row
 probe [--pid N] treeclick <row> [chevron|label]
                                       real mouse click on a tree row, with the
                                       position derived from the item height
-probe [--pid N] realclick | rightclick <class> <x> <y>
+probe [--pid N] realclick <class> <x> <y> [ctrl|shift]
+probe [--pid N] rightclick <class> <x> <y>
+probe [--pid N] selcount              number of selected rows
 probe [--pid N] key <down|up|left|right|enter|esc|del>...
 probe [--pid N] popup [file.png]      report/capture an open context menu
 probe [--pid N] combo                 item count, selection, dropped state
