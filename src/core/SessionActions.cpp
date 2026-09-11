@@ -54,6 +54,126 @@ std::wstring lastErrorText(DWORD code) {
     return text;
 }
 
+// Claude Code injects these into everything it spawns. Inherited by a session
+// resumed from here, they make it believe it is a nested child of the session
+// that launched this app, which turns transcript saving off - so the resumed
+// session would never be recorded and would vanish from this very list.
+const wchar_t* const kParentSessionMarkers[] = {
+    L"CLAUDECODE",
+    L"CLAUDE_PID",
+    L"CLAUDE_CODE_CHILD_SESSION",
+    L"CLAUDE_CODE_SESSION_ID",
+    L"CLAUDE_CODE_BRIDGE_SESSION_ID",
+    L"CLAUDE_CODE_MESSAGING_SOCKET",
+    L"CLAUDE_CODE_MESSAGING_TOKEN",
+    L"CLAUDE_CODE_ENTRYPOINT",
+};
+
+// The current environment minus those markers, as the double-null-terminated
+// block CREATE_UNICODE_ENVIRONMENT expects. Empty when there is nothing to
+// strip, so the caller can just inherit.
+std::wstring environmentWithoutParentSession() {
+    LPWCH environment = GetEnvironmentStringsW();
+    if (!environment) return {};
+
+    std::wstring block;
+    bool stripped = false;
+    for (LPWCH p = environment; *p;) {
+        std::wstring entry(p);
+        p += entry.size() + 1;
+
+        // Entries may start with '=' (the per-drive current directories), so
+        // the name ends at the *next* '='.
+        size_t eq = entry.find(L'=', 1);
+        std::wstring name = (eq == std::wstring::npos) ? entry : entry.substr(0, eq);
+
+        bool drop = false;
+        for (const wchar_t* marker : kParentSessionMarkers) {
+            if (_wcsicmp(name.c_str(), marker) == 0) { drop = true; break; }
+        }
+        if (drop) {
+            stripped = true;
+        } else {
+            block += entry;
+            block.push_back(L'\0');
+        }
+    }
+    FreeEnvironmentStringsW(environment);
+
+    if (!stripped) return {};
+    block.push_back(L'\0');
+    return block;
+}
+
+// Windows Terminal's settings file is JSONC - it may carry // and /* */
+// comments, which a strict JSON parser would choke on.
+std::string stripJsonComments(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    bool inString = false, escaped = false;
+
+    for (size_t i = 0; i < text.size(); i++) {
+        char c = text[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') inString = false;
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            continue;
+        }
+        if (c == '/' && i + 1 < text.size()) {
+            if (text[i + 1] == '/') {
+                while (i < text.size() && text[i] != '\n') i++;
+                if (i < text.size()) out.push_back('\n');
+                continue;
+            }
+            if (text[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/')) i++;
+                i++;  // the loop's i++ steps past '/'
+                continue;
+            }
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+// Windows Terminal applies a profile's appearance even when it is told to run a
+// different command, but only when the profile is named: given a bare command
+// line it falls back to a plain console look. So the user's default profile is
+// read from the settings file and passed through explicitly - otherwise a
+// session opens in the wrong colours.
+std::wstring defaultTerminalProfile() {
+    const fs::path candidates[] = {
+        fs::path(envW(L"LOCALAPPDATA")) / L"Packages" /
+            L"Microsoft.WindowsTerminal_8wekyb3d8bbwe" / L"LocalState" / L"settings.json",
+        fs::path(envW(L"LOCALAPPDATA")) / L"Packages" /
+            L"Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe" / L"LocalState" / L"settings.json",
+        fs::path(envW(L"LOCALAPPDATA")) / L"Microsoft" / L"Windows Terminal" / L"settings.json",
+    };
+
+    std::error_code ec;
+    for (const fs::path& path : candidates) {
+        if (!fs::exists(path, ec)) continue;
+        std::ifstream in(path, std::ios::binary);
+        if (!in) continue;
+        std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+
+        mini::JValue root;
+        if (!mini::parse(stripJsonComments(text), root) || !root.isObject()) continue;
+        std::string guid = root.strOf("defaultProfile");
+        if (!guid.empty()) return utf8to16(guid);
+    }
+    return {};
+}
+
 // Starts a command in its own console window.
 //
 // CreateProcess rather than ShellExecute: wt.exe in WindowsApps is an app
@@ -67,8 +187,10 @@ bool launchConsole(const std::wstring& commandLine, const std::wstring& director
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
 
+    std::wstring environment = environmentWithoutParentSession();
     if (!CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
-                        CREATE_NEW_CONSOLE, nullptr,
+                        CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+                        environment.empty() ? nullptr : environment.data(),
                         directory.empty() ? nullptr : directory.c_str(), &si, &pi)) {
         error = L"Could not run: " + commandLine + L"\n" + lastErrorText(GetLastError());
         return false;
@@ -262,16 +384,20 @@ bool SessionActions::resumeInTerminal(const Session& session, std::wstring& erro
     if (directory.empty() || !fs::is_directory(fs::path(directory), ec))
         directory = homePath().wstring();
 
-    // cmd /k keeps the window up after the agent exits, so a failure stays
-    // readable instead of the window vanishing.
-    if (onPath(L"wt.exe")) {
-        std::wstring ignored;
-        std::wstring viaTerminal =
-            L"wt.exe -d " + quotePath(directory) + L" cmd.exe /k " + resume;
-        if (launchConsole(viaTerminal, directory, ignored)) return true;
-        // Windows Terminal can be present but refuse to start; fall through.
+    if (!onPath(L"wt.exe")) {
+        error = L"Windows Terminal (wt.exe) was not found.";
+        return false;
     }
-    return launchConsole(L"cmd.exe /k " + resume, directory, error);
+
+    // The agent runs as the tab's own process - no shell wrapper - under the
+    // user's default profile, so a resumed session looks exactly like one
+    // started by hand.
+    std::wstring command = L"wt.exe";
+    std::wstring profile = defaultTerminalProfile();
+    if (!profile.empty()) command += L" -p " + quotePath(profile);
+    command += L" -d " + quotePath(directory) + L" " + resume;
+
+    return launchConsole(command, directory, error);
 }
 
 bool SessionActions::deleteSession(const Session& session, std::wstring& error) {

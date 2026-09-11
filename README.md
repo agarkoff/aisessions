@@ -6,11 +6,19 @@ runtime dependencies — a single self-contained `aisessions.exe`.
 Click a row to copy its session id to the clipboard; a toast confirms the copy.
 Right-click a row for:
 
-* **Resume in terminal** — opens a terminal in the session's directory running
-  `claude --resume <id>` or `opencode --session <id>`. Windows Terminal is used
-  when available, otherwise a console window; `cmd /k` keeps it open so a
-  failure stays readable. A directory that no longer exists falls back to the
-  user profile.
+* **Resume in terminal** — opens a Windows Terminal tab in the session's
+  directory running `claude --resume <id>` or `opencode --session <id>`. A
+  directory that no longer exists falls back to the user profile.
+
+  Two details matter here. The agent runs as the tab's own process under the
+  user's **default profile**, read from Windows Terminal's `settings.json`:
+  given a bare command line Windows Terminal drops back to a plain console look,
+  and wrapping the agent in a shell opened a Command Prompt tab instead — either
+  way the session came up in the wrong colours. And the child inherits a cleaned
+  environment: Claude Code marks everything it spawns with
+  `CLAUDE_CODE_CHILD_SESSION` and friends, and a session resumed with those
+  still set believes it is a nested child and **turns transcript saving off**,
+  so it would never be recorded and would disappear from this list.
 * **Delete session** (also the Del key) — asks first, then removes it. OpenCode
   goes through `opencode session delete`, the vendor's own command, which keeps
   the database consistent even while opencode is running. Claude has no such
