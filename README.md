@@ -3,9 +3,10 @@
 Browser for Claude Code and OpenCode session history. Pure Win32 / C++20, no
 runtime dependencies — a single self-contained `aisessions.exe`.
 
-Click a row to copy its session id to the clipboard; a toast confirms the copy.
-Right-click a row for:
+Right-click a row (or press the menu key on the focused one) for:
 
+* **Copy session ID** (also `Ctrl+C`) — puts the id on the clipboard; the status
+  line confirms it.
 * **Resume in terminal** — opens a Windows Terminal tab in the session's
   directory running `claude --resume <id>` or `opencode --session <id>`. A
   directory that no longer exists falls back to the user profile.
@@ -96,7 +97,6 @@ probe [--pid N] combo                 item count, selection, dropped state
 probe [--pid N] move <x> <y> <w> <h>  reposition the window
 probe [--pid N] restore | minimize
 probe [--pid N] clip [set <text>]     read or overwrite the clipboard
-probe [--pid N] toast                 report the toast window's state
 probe [--pid N] shot <file.png>       capture the window
 ```
 

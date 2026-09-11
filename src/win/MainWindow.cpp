@@ -1,5 +1,4 @@
 #include "MainWindow.h"
-#include "ToastWindow.h"
 #include "Theme.h"
 #include "StrUtil.h"
 #include "Trace.h"
@@ -240,10 +239,6 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_APP_LOAD_DONE:
         onLoadDone(lParam);
-        return 0;
-
-    case WM_APP_DESELECT:
-        clearSelection(static_cast<int>(wParam));
         return 0;
 
     case WM_CLOSE:
@@ -690,18 +685,18 @@ void MainWindow::showListMenu(int x, int y) {
 
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
+    AppendMenuW(menu, MF_STRING, IDM_COPY, L"Copy session ID\tCtrl+C");
     AppendMenuW(menu, MF_STRING, IDM_RESUME, L"Resume in terminal");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_DELETE, L"Delete session\tDel");
 
-    // The menu is tracked without notifications so the row stays unselected:
-    // selecting it would fire the copy-on-select path.
     int choice = static_cast<int>(TrackPopupMenuEx(
         menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
         x, y, hwnd_, nullptr));
     DestroyMenu(menu);
 
-    if (choice == IDM_RESUME) resumeSession(row);
+    if (choice == IDM_COPY) copySessionId(row);
+    else if (choice == IDM_RESUME) resumeSession(row);
     else if (choice == IDM_DELETE) deleteSession(row);
 }
 
@@ -764,28 +759,10 @@ LRESULT MainWindow::onNotify(LPARAM lParam) {
     if (hdr->hwndFrom == hList_) {
         if (hdr->code == LVN_KEYDOWN) {
             auto key = reinterpret_cast<const NMLVKEYDOWN*>(lParam);
-            if (key->wVKey == VK_DELETE) {
-                int focused = static_cast<int>(SendMessageW(
-                    hList_, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_FOCUSED));
-                deleteSession(focused);
-            }
-            return 0;
-        }
-
-        if (hdr->code == LVN_ITEMCHANGED) {
-            const NMLISTVIEW* nm = reinterpret_cast<const NMLISTVIEW*>(lParam);
-            bool becameSelected = (nm->uNewState & LVIS_SELECTED) &&
-                                  !(nm->uOldState & LVIS_SELECTED);
-            // A right click also selects the row; copying then would fight the
-            // context menu the user is opening.
-            if (GetKeyState(VK_RBUTTON) < 0) becameSelected = false;
-            if (becameSelected && nm->iItem >= 0 &&
-                nm->iItem < static_cast<int>(filtered_.size())) {
-                copySessionId(views_[filtered_[nm->iItem]].sessionId);
-                // Deselecting from inside the notification would re-enter the
-                // list view while it is still processing the click, so defer it.
-                PostMessageW(hwnd_, WM_APP_DESELECT, static_cast<WPARAM>(nm->iItem), 0);
-            }
+            int focused = static_cast<int>(SendMessageW(
+                hList_, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_FOCUSED));
+            if (key->wVKey == VK_DELETE) deleteSession(focused);
+            else if (key->wVKey == 'C' && GetKeyState(VK_CONTROL) < 0) copySessionId(focused);
             return 0;
         }
         if (hdr->code == NM_CUSTOMDRAW) return onListCustomDraw(lParam);
@@ -825,14 +802,6 @@ LRESULT MainWindow::onListCustomDraw(LPARAM lParam) {
     default:
         return CDRF_DODEFAULT;
     }
-}
-
-void MainWindow::clearSelection(int index) {
-    if (!hList_) return;
-    LVITEMW item{};
-    item.stateMask = LVIS_SELECTED;
-    SendMessageW(hList_, LVM_SETITEMSTATE, static_cast<WPARAM>(index),
-                 reinterpret_cast<LPARAM>(&item));
 }
 
 //--------------------------------------------------------------------
@@ -1036,7 +1005,9 @@ std::wstring MainWindow::getSearchText() const {
 // Clipboard, status, settings
 //--------------------------------------------------------------------
 
-void MainWindow::copySessionId(const std::wstring& sessionId) {
+void MainWindow::copySessionId(int row) {
+    if (row < 0 || row >= static_cast<int>(filtered_.size())) return;
+    const std::wstring& sessionId = views_[filtered_[row]].sessionId;
     if (sessionId.empty()) return;
 
     bool copied = false;
@@ -1057,8 +1028,9 @@ void MainWindow::copySessionId(const std::wstring& sessionId) {
         CloseClipboard();
     }
 
-    ToastWindow::instance().show(this,
-        copied ? L"Copied  " + sessionId : L"Could not copy to clipboard");
+    // Confirmed in the status line: a pop-up would be out of proportion for a
+    // menu command whose effect the user asked for explicitly.
+    setStatus(copied ? L"Copied " + sessionId : L"Could not copy to the clipboard");
 }
 
 void MainWindow::setStatus(const std::wstring& text) {

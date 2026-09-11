@@ -7,8 +7,6 @@
 #include "core/Settings.h"
 #include "win/ShellTree.h"
 
-class ToastWindow;
-
 class MainWindow {
 public:
     explicit MainWindow(const Settings& settings);
@@ -51,10 +49,10 @@ private:
     static constexpr int IDC_REFRESH = 103;
     static constexpr int IDC_LIST = 105;
     static constexpr int IDC_STATUS = 106;
-    static constexpr int IDM_RESUME = 200;
-    static constexpr int IDM_DELETE = 201;
+    static constexpr int IDM_COPY = 200;
+    static constexpr int IDM_RESUME = 201;
+    static constexpr int IDM_DELETE = 202;
     static constexpr UINT WM_APP_LOAD_DONE = WM_APP + 1;
-    static constexpr UINT WM_APP_DESELECT = WM_APP + 2;
     static constexpr wchar_t kClassName[] = L"AISessions_MainWindow";
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -83,6 +81,7 @@ private:
     void onFolderSelected(const std::wstring& path);
     void showListMenu(int x, int y);
     int  rowUnderCursor(int screenX, int screenY) const;
+    void copySessionId(int row);
     void resumeSession(int row);
     void deleteSession(int row);
     void onSplitterDown(LPARAM lParam);
@@ -96,9 +95,7 @@ private:
     void applyFilter();
     void fillList();
     void setSubItem(int row, int col, const std::wstring& text);
-    void clearSelection(int index);
     std::wstring getSearchText() const;
-    void copySessionId(const std::wstring& sessionId);
     void setStatus(const std::wstring& text);
     void readColumnWidths();
     void saveSettings();

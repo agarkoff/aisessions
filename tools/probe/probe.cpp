@@ -250,14 +250,24 @@ WORD virtualKey(const std::wstring& name) {
 // own modal loop and read the input queue, not the window's message queue.
 void sendKeys(int count, wchar_t** names) {
     for (int i = 0; i < count; i++) {
-        WORD vk = virtualKey(names[i]);
+        std::wstring name = names[i];
+        // "ctrl+x" holds Control around a single letter or named key.
+        bool ctrl = name.rfind(L"ctrl+", 0) == 0;
+        if (ctrl) name = name.substr(5);
+
+        WORD vk = virtualKey(name);
+        if (!vk && name.size() == 1 && iswalnum(name[0]))
+            vk = static_cast<WORD>(towupper(name[0]));
         if (!vk) {
             fwprintf(stderr, L"unknown key '%s'\n", names[i]);
             continue;
         }
+
+        if (ctrl) keybd_event(VK_CONTROL, 0, 0, 0);
         keybd_event(static_cast<BYTE>(vk), 0, 0, 0);
         Sleep(40);
         keybd_event(static_cast<BYTE>(vk), 0, KEYEVENTF_KEYUP, 0);
+        if (ctrl) keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
         Sleep(220);
     }
 }
@@ -418,21 +428,6 @@ int wmain(int argc, wchar_t** argv) {
         HWND combo = childById(main, 102);
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(_wtoi(argv[2])), 0);
         notifyParent(main, combo, CBN_SELCHANGE);
-    } else if (cmd == L"toast") {
-        HWND toast = FindWindowExW(nullptr, nullptr, L"AISessions_ToastWindow", nullptr);
-        if (!toast) {
-            printf("toast window not created\n");
-        } else {
-            RECT tr{};
-            GetWindowRect(toast, &tr);
-            BYTE alpha = 0;
-            DWORD flags = 0;
-            COLORREF key = 0;
-            GetLayeredWindowAttributes(toast, &key, &alpha, &flags);
-            printf("toast visible=%d rect=%d,%d,%d,%d alpha=%d\n",
-                   IsWindowVisible(toast) ? 1 : 0, tr.left, tr.top, tr.right, tr.bottom,
-                   static_cast<int>(alpha));
-        }
     } else if (cmd == L"restore") {
         // SW_SHOWNOACTIVATE: make the window measurable again without pulling
         // it in front of whatever the user is doing.

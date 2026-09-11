@@ -21,7 +21,7 @@ public:
     COLORREF text() const;
     COLORREF dimText() const;      // status line
     COLORREF border() const;
-    COLORREF accent() const;       // toast fill
+    COLORREF accent() const;       // focus ring on the painted controls
 
     // Toolbar chrome, drawn by hand so the search box, the agent list and the
     // button share one flat frame instead of three different system looks.
