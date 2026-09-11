@@ -11,6 +11,9 @@ struct Session {
     long long updatedMs = 0;
     // Claude: the transcript file. OpenCode: all message and part rows.
     long long sizeBytes = 0;
+    // False for a Claude session whose transcript has been pruned: only its
+    // history line is left, so `claude --resume` has nothing to open.
+    bool resumable = true;
 
     std::string updatedStr() const {
         return formatLocal(updatedMs);

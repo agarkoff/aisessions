@@ -707,12 +707,19 @@ void MainWindow::showListMenu(int x, int y) {
     size_t n = rows.size();
     std::wstring count = n > 1 ? L" (" + std::to_wstring(n) + L")" : L"";
 
+    // Resume is offered only when at least one selected session still has
+    // something to resume; it then applies to those alone.
+    size_t resumable = 0;
+    for (int r : rows) resumable += all_[filtered_[r]].resumable ? 1 : 0;
+    std::wstring resumeCount = resumable > 1 ? L" (" + std::to_wstring(resumable) + L")" : L"";
+
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, IDM_COPY,
                 (L"Copy session ID" + std::wstring(n > 1 ? L"s" : L"") + count + L"\tCtrl+C").c_str());
-    AppendMenuW(menu, MF_STRING, IDM_RESUME,
-                (L"Resume in terminal" + count + L"\tCtrl+Enter").c_str());
+    AppendMenuW(menu, MF_STRING | (resumable ? MF_ENABLED : MF_GRAYED), IDM_RESUME,
+                (resumable ? L"Resume in terminal" + resumeCount + L"\tCtrl+Enter"
+                           : std::wstring(L"Resume in terminal — transcript is gone")).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_DELETE,
                 (L"Delete session" + std::wstring(n > 1 ? L"s" : L"") + count + L"\tDel").c_str());
@@ -738,8 +745,16 @@ std::vector<int> MainWindow::selectedRows() const {
     return rows;
 }
 
-void MainWindow::resumeSessions(const std::vector<int>& rows) {
-    if (rows.empty()) return;
+void MainWindow::resumeSessions(const std::vector<int>& selected) {
+    // Sessions with no transcript left are skipped rather than launched into
+    // an error; the menu already greys them, this covers the shortcut.
+    std::vector<int> rows;
+    for (int row : selected)
+        if (all_[filtered_[row]].resumable) rows.push_back(row);
+    if (rows.empty()) {
+        if (!selected.empty()) setStatus(L"Nothing to resume: the transcript is gone");
+        return;
+    }
 
     // Opening many terminals by accident is easy with Ctrl+A; ask past a few.
     if (rows.size() > 3) {
@@ -959,7 +974,13 @@ LRESULT MainWindow::onListCustomDraw(LPARAM lParam) {
         cd->clrTextBk = odd ? (theme.dark() ? RGB(0x31, 0x31, 0x31)
                                             : RGB(0xf7, 0xf7, 0xf9))
                             : theme.surface();
-        cd->clrText = theme.text();
+
+        // A session that cannot be resumed is dimmed so the unavailability
+        // is visible before anyone reaches for the menu.
+        int row = static_cast<int>(cd->nmcd.dwItemSpec);
+        bool resumable = row >= 0 && row < static_cast<int>(filtered_.size()) &&
+                         all_[filtered_[row]].resumable;
+        cd->clrText = resumable ? theme.text() : theme.dimText();
         return CDRF_DODEFAULT;
     }
 

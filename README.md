@@ -71,7 +71,9 @@ The project transcripts run to hundreds of megabytes, so they are scanned in
   was produced with. Both show "—" for a Claude session whose transcript is
   gone: Claude Code prunes transcripts after `cleanupPeriodDays` (30 by
   default), and such a session cannot be resumed either — only its history
-  line survives.
+  line survives. Those rows are drawn dimmed, Resume is greyed out for them
+  (and skips them in a mixed selection), and Ctrl+Enter says so in the status
+  line instead of launching into an error.
 * Window geometry, column widths and the sort persist to
   `%LOCALAPPDATA%\AISessions\settings.json`. Widths are in 96-dpi units so a
   saved layout survives moving between monitors of different scaling, and every

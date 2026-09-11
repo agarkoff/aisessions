@@ -244,12 +244,14 @@ std::vector<Session> SessionLoader::loadClaude() {
         // as unknown rather than leaving the cells blank.
         long long size = 0;
         std::string model = "\xE2\x80\x94";  // em dash
-        if (auto sz = sizes.find(sid); sz != sizes.end()) size = sz->second;
+        auto sz = sizes.find(sid);
+        bool hasTranscript = sz != sizes.end();
+        if (hasTranscript) size = sz->second;
         if (auto md = models.find(sid); md != models.end()) model = md->second;
 
         result.push_back(Session{
             "Claude", sid, info.dir, title, std::move(model),
-            info.created, info.updated, size });
+            info.created, info.updated, size, hasTranscript });
     }
     return result;
 }
