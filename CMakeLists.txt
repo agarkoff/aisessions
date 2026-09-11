@@ -27,6 +27,8 @@ add_executable(aisessions
   src/core/Json.cpp
   src/core/SessionLoader.h
   src/core/SessionLoader.cpp
+  src/core/SessionActions.h
+  src/core/SessionActions.cpp
   src/core/Settings.h
   src/core/Settings.cpp
   src/win/MainWindow.h

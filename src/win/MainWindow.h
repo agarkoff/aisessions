@@ -51,6 +51,8 @@ private:
     static constexpr int IDC_REFRESH = 103;
     static constexpr int IDC_LIST = 105;
     static constexpr int IDC_STATUS = 106;
+    static constexpr int IDM_RESUME = 200;
+    static constexpr int IDM_DELETE = 201;
     static constexpr UINT WM_APP_LOAD_DONE = WM_APP + 1;
     static constexpr UINT WM_APP_DESELECT = WM_APP + 2;
     static constexpr wchar_t kClassName[] = L"AISessions_MainWindow";
@@ -79,6 +81,10 @@ private:
     LRESULT onNotify(LPARAM lParam);
     LRESULT onListCustomDraw(LPARAM lParam);
     void onFolderSelected(const std::wstring& path);
+    void showListMenu(int x, int y);
+    int  rowUnderCursor(int screenX, int screenY) const;
+    void resumeSession(int row);
+    void deleteSession(int row);
     void onSplitterDown(LPARAM lParam);
     void onSplitterMove(LPARAM lParam);
     void onSplitterUp();

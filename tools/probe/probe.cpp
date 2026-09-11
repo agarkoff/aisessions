@@ -180,10 +180,9 @@ void msgClick(HWND target, int x, int y) {
 // Some shell controls only raise their COM events for genuine input, so a
 // posted WM_LBUTTONDOWN cannot exercise them. This drives the real pointer,
 // then puts it back where the user left it.
-bool realClick(HWND main, HWND target, int x, int y) {
-    POINT restore{};
-    GetCursorPos(&restore);
-
+// Without the foreground window a synthetic click lands in whatever is on top
+// instead, which would otherwise look like the app ignoring it.
+bool bringForward(HWND main) {
     DWORD dummy = 0;
     DWORD foreground = GetWindowThreadProcessId(GetForegroundWindow(), &dummy);
     DWORD self = GetCurrentThreadId();
@@ -192,13 +191,18 @@ bool realClick(HWND main, HWND target, int x, int y) {
     AttachThreadInput(self, foreground, FALSE);
     Sleep(250);
 
-    // Without the foreground window the click lands in whatever is on top
-    // instead, which would otherwise look like the app ignoring it.
     if (GetForegroundWindow() != main) {
         fwprintf(stderr, L"ERROR: could not bring the window forward; "
-                         L"click would have gone elsewhere\n");
+                         L"input would have gone elsewhere\n");
         return false;
     }
+    return true;
+}
+
+bool realClick(HWND main, HWND target, int x, int y) {
+    POINT restore{};
+    GetCursorPos(&restore);
+    if (!bringForward(main)) return false;
 
     POINT pt{x, y};
     ClientToScreen(target, &pt);
@@ -211,6 +215,51 @@ bool realClick(HWND main, HWND target, int x, int y) {
 
     SetCursorPos(restore.x, restore.y);
     return true;
+}
+
+bool realRightClick(HWND main, HWND target, int x, int y) {
+    POINT restore{};
+    GetCursorPos(&restore);
+    if (!bringForward(main)) return false;
+
+    POINT pt{x, y};
+    ClientToScreen(target, &pt);
+    SetCursorPos(pt.x, pt.y);
+    Sleep(120);
+    mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
+    Sleep(60);
+    mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
+    Sleep(350);
+
+    SetCursorPos(restore.x, restore.y);
+    return true;
+}
+
+WORD virtualKey(const std::wstring& name) {
+    if (name == L"down") return VK_DOWN;
+    if (name == L"up") return VK_UP;
+    if (name == L"left") return VK_LEFT;
+    if (name == L"right") return VK_RIGHT;
+    if (name == L"enter") return VK_RETURN;
+    if (name == L"esc") return VK_ESCAPE;
+    if (name == L"del") return VK_DELETE;
+    return 0;
+}
+
+// Keystrokes have to be real: a pop-up menu and a message box each run their
+// own modal loop and read the input queue, not the window's message queue.
+void sendKeys(int count, wchar_t** names) {
+    for (int i = 0; i < count; i++) {
+        WORD vk = virtualKey(names[i]);
+        if (!vk) {
+            fwprintf(stderr, L"unknown key '%s'\n", names[i]);
+            continue;
+        }
+        keybd_event(static_cast<BYTE>(vk), 0, 0, 0);
+        Sleep(40);
+        keybd_event(static_cast<BYTE>(vk), 0, KEYEVENTF_KEYUP, 0);
+        Sleep(220);
+    }
 }
 
 bool savePng(HBITMAP bmp, const std::wstring& path) {
@@ -407,6 +456,57 @@ int wmain(int argc, wchar_t** argv) {
             int x = chevron ? h + h / 4 : h * 4;
             printf("itemheight=%d click at %d,%d\n", h, x, y);
             realClick(main, tree, x, y);
+        }
+    } else if (cmd == L"rightclick" && argc > 4) {
+        HWND target = childByClass(main, argv[2]);
+        if (!target) {
+            fwprintf(stderr, L"ERROR: no child matching '%s'\n", argv[2]);
+            rc = 1;
+        } else if (!realRightClick(main, target, _wtoi(argv[3]), _wtoi(argv[4]))) {
+            rc = 1;
+        }
+    } else if (cmd == L"key" && argc > 2) {
+        // Only steal focus when the app does not already have it: a pop-up menu
+        // or a message box is a foreground window of the same process, and
+        // calling SetForegroundWindow on the main window would dismiss it.
+        DWORD targetPid = 0, activePid = 0;
+        GetWindowThreadProcessId(main, &targetPid);
+        GetWindowThreadProcessId(GetForegroundWindow(), &activePid);
+        if (activePid == targetPid || bringForward(main)) sendKeys(argc - 2, argv + 2);
+        else rc = 1;
+    } else if (cmd == L"popup") {
+        // The context menu is a separate top-level window of class #32768.
+        // The system keeps cached, hidden ones around, and FindWindow returns
+        // whichever comes first in Z-order, so scan for the visible one.
+        HWND popup = nullptr;
+        EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+            if (classOf(hwnd) == L"#32768" && IsWindowVisible(hwnd)) {
+                *reinterpret_cast<HWND*>(lp) = hwnd;
+                return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&popup));
+
+        if (!popup) {
+            printf("no popup menu open\n");
+        } else {
+            RECT pr{};
+            GetWindowRect(popup, &pr);
+            printf("popup rect=%d,%d,%d,%d\n", pr.left, pr.top, pr.right, pr.bottom);
+            if (argc > 2) {
+                int w = pr.right - pr.left, h = pr.bottom - pr.top;
+                HDC screen = GetDC(nullptr);
+                HDC mem = CreateCompatibleDC(screen);
+                HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+                HGDIOBJ old = SelectObject(mem, bmp);
+                // A menu is drawn by the system; copy it off the screen.
+                BitBlt(mem, 0, 0, w, h, screen, pr.left, pr.top, SRCCOPY);
+                SelectObject(mem, old);
+                printf("saved=%d\n", savePng(bmp, argv[2]) ? 1 : 0);
+                DeleteObject(bmp);
+                DeleteDC(mem);
+                ReleaseDC(nullptr, screen);
+            }
         }
     } else if (cmd == L"move" && argc > 5) {
         SetWindowPos(main, nullptr, _wtoi(argv[2]), _wtoi(argv[3]),

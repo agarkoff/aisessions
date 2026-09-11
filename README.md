@@ -4,6 +4,19 @@ Browser for Claude Code and OpenCode session history. Pure Win32 / C++20, no
 runtime dependencies — a single self-contained `aisessions.exe`.
 
 Click a row to copy its session id to the clipboard; a toast confirms the copy.
+Right-click a row for:
+
+* **Resume in terminal** — opens a terminal in the session's directory running
+  `claude --resume <id>` or `opencode --session <id>`. Windows Terminal is used
+  when available, otherwise a console window; `cmd /k` keeps it open so a
+  failure stays readable. A directory that no longer exists falls back to the
+  user profile.
+* **Delete session** (also the Del key) — asks first, then removes it. OpenCode
+  goes through `opencode session delete`, the vendor's own command, which keeps
+  the database consistent even while opencode is running. Claude has no such
+  command, so its transcript is moved to the **Recycle Bin** and its entries are
+  dropped from `history.jsonl`, which is rewritten atomically with the previous
+  file kept as `history.jsonl.bak`.
 
 ## Sources
 
@@ -68,7 +81,10 @@ probe [--pid N] treecount | treestate  node count / expanded+selected per row
 probe [--pid N] treeclick <row> [chevron|label]
                                       real mouse click on a tree row, with the
                                       position derived from the item height
-probe [--pid N] realclick <class> <x> <y>
+probe [--pid N] realclick | rightclick <class> <x> <y>
+probe [--pid N] key <down|up|left|right|enter|esc|del>...
+probe [--pid N] popup [file.png]      report/capture an open context menu
+probe [--pid N] combo                 item count, selection, dropped state
 probe [--pid N] move <x> <y> <w> <h>  reposition the window
 probe [--pid N] restore | minimize
 probe [--pid N] clip [set <text>]     read or overwrite the clipboard
@@ -83,7 +99,10 @@ queries that pass `HTREEITEM`s by value) are used, and clicks are posted rather
 than sent, because a tree view's button-down handler runs a nested loop waiting
 for the button-up.
 
-`realclick` and `treeclick` are the exceptions: they drive the physical pointer,
+To exercise deleting without touching real sessions, point the app at a throwaway
+home: `USERPROFILE` and `LOCALAPPDATA` are all it reads.
+
+`realclick`, `rightclick`, `treeclick` and `key` are the exceptions: they drive the physical pointer and keyboard,
 because the shell tree raises its COM events for genuine input only. They take
 the foreground for a moment and put the cursor back afterwards, and they fail
 loudly if the window could not be brought forward, since a click that lands in

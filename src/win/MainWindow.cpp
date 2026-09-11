@@ -2,6 +2,8 @@
 #include "ToastWindow.h"
 #include "Theme.h"
 #include "StrUtil.h"
+#include "Trace.h"
+#include "core/SessionActions.h"
 #include "core/SessionLoader.h"
 #include "resource.h"
 
@@ -154,6 +156,13 @@ LRESULT MainWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CAPTURECHANGED:
         dragSplitter_ = false;
         return 0;
+
+    case WM_CONTEXTMENU:
+        if (reinterpret_cast<HWND>(wParam) == hList_) {
+            showListMenu(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+            return 0;
+        }
+        return DefWindowProcW(hwnd_, msg, wParam, lParam);
 
     case WM_SETCURSOR:
         if (reinterpret_cast<HWND>(wParam) == hwnd_ && cursorOverSplitter()) {
@@ -644,6 +653,99 @@ void MainWindow::onCommand(WPARAM wParam, LPARAM lParam) {
     }
 }
 
+//--------------------------------------------------------------------
+// Context menu
+//--------------------------------------------------------------------
+
+int MainWindow::rowUnderCursor(int screenX, int screenY) const {
+    LVHITTESTINFO hit{};
+    hit.pt = POINT{screenX, screenY};
+    ScreenToClient(hList_, &hit.pt);
+    int row = static_cast<int>(SendMessageW(hList_, LVM_HITTEST, 0,
+                                            reinterpret_cast<LPARAM>(&hit)));
+    return (row >= 0 && row < static_cast<int>(filtered_.size())) ? row : -1;
+}
+
+void MainWindow::showListMenu(int x, int y) {
+    // Keyboard menu key: aim at the focused row and place the menu on it.
+    if (x == -1 && y == -1) {
+        int focused = static_cast<int>(
+            SendMessageW(hList_, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_FOCUSED));
+        if (focused < 0) return;
+        RECT itemRc{};
+        itemRc.left = LVIR_BOUNDS;
+        if (!SendMessageW(hList_, LVM_GETITEMRECT, static_cast<WPARAM>(focused),
+                          reinterpret_cast<LPARAM>(&itemRc)))
+            return;
+        POINT pt{itemRc.left + scale(24), itemRc.bottom};
+        ClientToScreen(hList_, &pt);
+        x = pt.x;
+        y = pt.y;
+    }
+
+    int row = rowUnderCursor(x, y);
+    traceW(L"showListMenu at %d,%d -> row=%d foreground=%d", x, y, row,
+           GetForegroundWindow() == hwnd_ ? 1 : 0);
+    if (row < 0) return;
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, IDM_RESUME, L"Resume in terminal");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, IDM_DELETE, L"Delete session\tDel");
+
+    // The menu is tracked without notifications so the row stays unselected:
+    // selecting it would fire the copy-on-select path.
+    int choice = static_cast<int>(TrackPopupMenuEx(
+        menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
+        x, y, hwnd_, nullptr));
+    DestroyMenu(menu);
+
+    if (choice == IDM_RESUME) resumeSession(row);
+    else if (choice == IDM_DELETE) deleteSession(row);
+}
+
+void MainWindow::resumeSession(int row) {
+    if (row < 0 || row >= static_cast<int>(filtered_.size())) return;
+    const Session& session = all_[filtered_[row]];
+
+    std::wstring error;
+    if (SessionActions::resumeInTerminal(session, error)) {
+        setStatus(L"Resuming " + views_[filtered_[row]].sessionId + L"...");
+        return;
+    }
+    MessageBoxW(hwnd_, error.c_str(), L"Resume in terminal", MB_ICONWARNING | MB_OK);
+}
+
+void MainWindow::deleteSession(int row) {
+    if (row < 0 || row >= static_cast<int>(filtered_.size())) return;
+    const SessionView& view = views_[filtered_[row]];
+    const Session& session = all_[filtered_[row]];
+
+    std::wstring prompt =
+        L"Delete this session?\n\n" + view.title + L"\n" + view.sessionId + L"\n\n";
+    prompt += session.agent == "Claude"
+        ? L"The transcript goes to the Recycle Bin and the entry is removed from "
+          L"history.jsonl, which is backed up as history.jsonl.bak."
+        : L"This runs `opencode session delete` and cannot be undone.";
+
+    if (MessageBoxW(hwnd_, prompt.c_str(), L"Delete session",
+                    MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+        return;
+
+    HCURSOR previous = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    std::wstring error;
+    bool ok = SessionActions::deleteSession(session, error);
+    SetCursor(previous);
+
+    if (!ok) {
+        MessageBoxW(hwnd_, error.c_str(), L"Delete session", MB_ICONERROR | MB_OK);
+        return;
+    }
+    setStatus(L"Deleted " + view.sessionId);
+    loadSessionsAsync();
+}
+
 void MainWindow::onFolderSelected(const std::wstring& path) {
     // An empty path means a virtual node such as "This PC": show everything.
     selectedDir_ = lowerW(path);
@@ -651,6 +753,7 @@ void MainWindow::onFolderSelected(const std::wstring& path) {
     // component-boundary test in isPathPrefixW reject every child path.
     while (selectedDir_.size() > 1 && selectedDir_.back() == L'\\')
         selectedDir_.pop_back();
+    traceW(L"onFolderSelected '%s'", selectedDir_.c_str());
     applyFilter();
 }
 
@@ -659,10 +762,23 @@ LRESULT MainWindow::onNotify(LPARAM lParam) {
     if (!hdr) return 0;
 
     if (hdr->hwndFrom == hList_) {
+        if (hdr->code == LVN_KEYDOWN) {
+            auto key = reinterpret_cast<const NMLVKEYDOWN*>(lParam);
+            if (key->wVKey == VK_DELETE) {
+                int focused = static_cast<int>(SendMessageW(
+                    hList_, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_FOCUSED));
+                deleteSession(focused);
+            }
+            return 0;
+        }
+
         if (hdr->code == LVN_ITEMCHANGED) {
             const NMLISTVIEW* nm = reinterpret_cast<const NMLISTVIEW*>(lParam);
             bool becameSelected = (nm->uNewState & LVIS_SELECTED) &&
                                   !(nm->uOldState & LVIS_SELECTED);
+            // A right click also selects the row; copying then would fight the
+            // context menu the user is opening.
+            if (GetKeyState(VK_RBUTTON) < 0) becameSelected = false;
             if (becameSelected && nm->iItem >= 0 &&
                 nm->iItem < static_cast<int>(filtered_.size())) {
                 copySessionId(views_[filtered_[nm->iItem]].sessionId);
