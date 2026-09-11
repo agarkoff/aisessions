@@ -1,0 +1,9 @@
+#include "resource.h"
+
+// CREATEPROCESS_MANIFEST_RESOURCE_ID / RT_MANIFEST: common controls v6 plus
+// PerMonitorV2 DPI awareness.
+1 24 "app.manifest"
+
+// Embedded so the executable carries its own icon instead of depending on a
+// file sitting next to it.
+IDI_APPICON ICON "assets/AppIcon.ico"

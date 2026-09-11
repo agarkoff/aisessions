@@ -1,0 +1,20 @@
+# CMake build trees
+build/
+out/
+cmake-build-*/
+
+# MSVC / IDE
+.vs/
+*.user
+*.suo
+CMakeUserPresets.json
+
+# Build artefacts that can escape the build tree
+*.obj
+*.res
+*.ilk
+*.pdb
+*.exe
+
+# Crash dumps
+*.dmp
