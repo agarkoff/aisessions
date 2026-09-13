@@ -29,4 +29,10 @@ bool deleteSession(const Session& session, std::wstring& error);
 bool deleteClaudeSessions(const std::vector<std::string>& sessionIds,
                           long long& freedBytes, std::wstring& error);
 
+// Starts a brand-new session of the given agent ("Claude" or "OpenCode") in
+// `directory` - a bare `claude` or `opencode`, no --resume/--session flag.
+// Used from the folder tree's "New session here" context menu.
+bool startNewSession(const std::string& agent, const std::wstring& directory,
+                     std::wstring& error);
+
 } // namespace SessionActions

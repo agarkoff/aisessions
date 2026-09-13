@@ -330,6 +330,9 @@ void MainWindow::createChildren() {
         auto it = dirCounts_.find(path);
         return it != dirCounts_.end() ? it->second : 0;
     };
+    tree_.onNewSessionRequested = [this](const std::string& agent, const std::wstring& directory) {
+        startNewSessionInDirectory(agent, directory);
+    };
 
     hList_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP
@@ -853,6 +856,16 @@ void MainWindow::resumeSessions(const std::vector<int>& selected) {
         setStatus(L"Resuming " + std::to_wstring(started) + L" sessions...");
     if (!errors.empty())
         MessageBoxW(hwnd_, errors.c_str(), L"Resume in terminal", MB_ICONWARNING | MB_OK);
+}
+
+void MainWindow::startNewSessionInDirectory(const std::string& agent,
+                                            const std::wstring& directory) {
+    std::wstring error;
+    if (SessionActions::startNewSession(agent, directory, error)) {
+        setStatus(L"Starting a new " + utf8to16(agent) + L" session...");
+        return;
+    }
+    MessageBoxW(hwnd_, error.c_str(), L"New session", MB_ICONWARNING | MB_OK);
 }
 
 void MainWindow::deleteSessions(const std::vector<int>& rows) {

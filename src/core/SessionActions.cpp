@@ -40,7 +40,14 @@ bool onPath(const wchar_t* exe) {
 }
 
 std::wstring quotePath(const std::wstring& s) {
-    return L"\"" + s + L"\"";
+    // CommandLineToArgvW treats a backslash specially only right before a
+    // closing quote: an odd run escapes the quote itself instead of ending
+    // the argument, silently merging it with everything that follows on the
+    // command line. A drive root ("D:\") is the one path this app quotes
+    // that can end in a backslash, so double it to keep the quote closing.
+    std::wstring escaped = s;
+    if (!escaped.empty() && escaped.back() == L'\\') escaped += L'\\';
+    return L"\"" + escaped + L"\"";
 }
 
 std::wstring lastErrorText(DWORD code) {
@@ -356,31 +363,37 @@ bool deleteOpenCodeSession(const Session& session, std::wstring& error) {
     return true;
 }
 
-} // namespace
-
-bool SessionActions::resumeInTerminal(const Session& session, std::wstring& error) {
-    std::wstring id = utf8to16(session.sessionId);
-    std::wstring directory = utf8to16(session.directory);
-
-    std::wstring resume;
-    if (session.agent == "Claude") {
+// Builds the agent's own invocation: `claude.exe --resume <id>` or a bare
+// `claude.exe` when sessionId is empty (a new session); same shape for
+// opencode. Shared by resume and new-session launches.
+bool buildAgentCommand(const std::string& agent, const std::wstring& sessionId,
+                       std::wstring& command, std::wstring& error) {
+    if (agent == "Claude") {
         if (!onPath(L"claude.exe")) {
             error = L"claude was not found on PATH.";
             return false;
         }
-        resume = L"claude.exe --resume " + id;
-    } else if (session.agent == "OpenCode") {
+        command = L"claude.exe";
+        if (!sessionId.empty()) command += L" --resume " + sessionId;
+    } else if (agent == "OpenCode") {
         if (!onPath(L"opencode.exe")) {
             error = L"opencode was not found on PATH.";
             return false;
         }
-        resume = L"opencode.exe --session " + id;
+        command = L"opencode.exe";
+        if (!sessionId.empty()) command += L" --session " + sessionId;
     } else {
-        error = L"No terminal command is known for agent \"" +
-                utf8to16(session.agent) + L"\".";
+        error = L"No terminal command is known for agent \"" + utf8to16(agent) + L"\".";
         return false;
     }
+    return true;
+}
 
+// Opens a Windows Terminal tab in `directory` running `agentCommand`, under
+// the user's default profile with no shell wrapper - shared by resume and
+// new-session launches so both look exactly like something started by hand.
+bool launchInTerminal(const std::wstring& agentCommand, std::wstring directory,
+                      std::wstring& error) {
     // A session's directory can be gone; start in the profile rather than fail.
     std::error_code ec;
     if (directory.empty() || !fs::is_directory(fs::path(directory), ec))
@@ -391,15 +404,28 @@ bool SessionActions::resumeInTerminal(const Session& session, std::wstring& erro
         return false;
     }
 
-    // The agent runs as the tab's own process - no shell wrapper - under the
-    // user's default profile, so a resumed session looks exactly like one
-    // started by hand.
     std::wstring command = L"wt.exe";
     std::wstring profile = defaultTerminalProfile();
     if (!profile.empty()) command += L" -p " + quotePath(profile);
-    command += L" -d " + quotePath(directory) + L" " + resume;
+    command += L" -d " + quotePath(directory) + L" " + agentCommand;
 
     return launchConsole(command, directory, error);
+}
+
+} // namespace
+
+bool SessionActions::resumeInTerminal(const Session& session, std::wstring& error) {
+    std::wstring command;
+    if (!buildAgentCommand(session.agent, utf8to16(session.sessionId), command, error))
+        return false;
+    return launchInTerminal(command, utf8to16(session.directory), error);
+}
+
+bool SessionActions::startNewSession(const std::string& agent, const std::wstring& directory,
+                                     std::wstring& error) {
+    std::wstring command;
+    if (!buildAgentCommand(agent, std::wstring(), command, error)) return false;
+    return launchInTerminal(command, directory, error);
 }
 
 bool SessionActions::deleteClaudeSessions(const std::vector<std::string>& sessionIds,

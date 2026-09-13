@@ -92,6 +92,9 @@ private:
     std::vector<int> selectedRows() const;
     void copySessionIds(const std::vector<int>& rows);
     void resumeSessions(const std::vector<int>& rows);
+    // From the folder tree's own context menu, not the list's selection.
+    void startNewSessionInDirectory(const std::string& agent,
+                                    const std::wstring& directory);
     void deleteSessions(const std::vector<int>& rows);
     void deleteStaleSessions();  // every visible row with no transcript left
     void updatePruneButton();

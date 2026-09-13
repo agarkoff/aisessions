@@ -51,6 +51,11 @@ public:
     // folder with no sessions is left exactly as Explorer would show it.
     std::function<int(const std::wstring&)> folderSessionCount;
 
+    // Called when the user picks "New Claude/OpenCode session here" from the
+    // tree's own context menu, with the agent name ("Claude" or "OpenCode")
+    // and the right-clicked folder's real filesystem path.
+    std::function<void(const std::string&, const std::wstring&)> onNewSessionRequested;
+
     // IUnknown
     IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
     IFACEMETHODIMP_(ULONG) AddRef() override;
@@ -89,9 +94,17 @@ public:
 private:
     // Set when the inner tree view sees real mouse or keyboard input, which is
     // how a selection the user made is told apart from the one the control
-    // restores by itself while populating.
+    // restores by itself while populating. Also where a right click's
+    // WM_CONTEXTMENU is intercepted, replacing the shell's own (huge, mostly
+    // irrelevant here - BitLocker, 7-Zip, Properties...) folder menu with a
+    // small one of our own.
     static LRESULT CALLBACK inputWatchProc(HWND hwnd, UINT msg, WPARAM wParam,
                                            LPARAM lParam, UINT_PTR id, DWORD_PTR data);
+
+    // Resolves the folder under (screenX, screenY) and shows the "New session
+    // here" menu for it. Does nothing for a virtual node (This PC, a library),
+    // which has no real path to launch anything in.
+    void showContextMenu(int screenX, int screenY);
 
     INameSpaceTreeControl* control_ = nullptr;
     IShellItem* root_ = nullptr;

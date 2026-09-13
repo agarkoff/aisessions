@@ -7,6 +7,7 @@
 #include <knownfolders.h>
 #include <shlobj.h>
 #include <uxtheme.h>
+#include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM: sign-extend, unlike LOWORD/HIWORD
 
 ShellTree::~ShellTree() {
     destroy();
@@ -74,11 +75,33 @@ LRESULT CALLBACK ShellTree::inputWatchProc(HWND hwnd, UINT msg, WPARAM wParam,
     switch (msg) {
     case WM_LBUTTONDOWN:
     case WM_LBUTTONDBLCLK:
-    case WM_RBUTTONDOWN:
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         if (auto* self = reinterpret_cast<ShellTree*>(data)) self->userDriven_ = true;
         break;
+    case WM_RBUTTONDOWN: {
+        // Caught here rather than on the WM_CONTEXTMENU that would normally
+        // follow a right-click: this control shows its own (huge, mostly
+        // irrelevant here) default folder menu synchronously from inside its
+        // own WM_RBUTTONDOWN handling, before WM_RBUTTONUP or WM_CONTEXTMENU
+        // is ever generated - by the time DefSubclassProc would return here,
+        // that menu has already been shown and dismissed. Swallowing the
+        // button-down itself (no DefSubclassProc call) is what pre-empts it.
+        if (auto* self = reinterpret_cast<ShellTree*>(data)) {
+            self->userDriven_ = true;
+            POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ClientToScreen(hwnd, &pt);
+            self->showContextMenu(pt.x, pt.y);
+        }
+        return 0;
+    }
+    case WM_RBUTTONUP:
+        // Not just the button-down: when showContextMenu() decides there is
+        // nothing to show (a virtual node with no real path), no popup's own
+        // modal loop is around to absorb this - it would otherwise reach the
+        // real treeview and let it show its own default menu from the button
+        // being released over the item, undoing the suppression above.
+        return 0;
     case WM_NCDESTROY:
         RemoveWindowSubclass(hwnd, &ShellTree::inputWatchProc, id);
         break;
@@ -86,6 +109,41 @@ LRESULT CALLBACK ShellTree::inputWatchProc(HWND hwnd, UINT msg, WPARAM wParam,
         break;
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+void ShellTree::showContextMenu(int screenX, int screenY) {
+    if (!control_ || !onNewSessionRequested) return;
+
+    POINT pt{screenX, screenY};
+    ScreenToClient(hwnd_, &pt);
+
+    IShellItem* psi = nullptr;
+    if (FAILED(control_->HitTest(&pt, &psi)) || !psi) return;
+
+    PWSTR name = nullptr;
+    std::wstring path;
+    if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &name)) && name) {
+        path = name;
+        CoTaskMemFree(name);
+    }
+    psi->Release();
+    // A virtual node (This PC, a library) has no real path, hence nothing to
+    // launch a session in - matches the count and selection handlers' rule.
+    if (path.empty()) return;
+
+    enum { kNewClaude = 1, kNewOpenCode = 2 };
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, kNewClaude, L"New Claude session here");
+    AppendMenuW(menu, MF_STRING, kNewOpenCode, L"New OpenCode session here");
+
+    int choice = static_cast<int>(TrackPopupMenuEx(
+        menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
+        screenX, screenY, hwnd_, nullptr));
+    DestroyMenu(menu);
+
+    if (choice == kNewClaude) onNewSessionRequested("Claude", path);
+    else if (choice == kNewOpenCode) onNewSessionRequested("OpenCode", path);
 }
 
 void ShellTree::destroy() {
