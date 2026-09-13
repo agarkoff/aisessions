@@ -1,4 +1,6 @@
 #include "ShellTree.h"
+#include "StrUtil.h"
+#include "Theme.h"
 #include "Trace.h"
 
 #include <commctrl.h>
@@ -61,6 +63,10 @@ bool ShellTree::create(HWND parent, const RECT& rc) {
 void ShellTree::selectRoot() {
     if (control_ && root_)
         control_->SetItemState(root_, NSTCIS_SELECTED, NSTCIS_SELECTED);
+}
+
+void ShellTree::invalidate() {
+    if (innerTree_) InvalidateRect(innerTree_, nullptr, TRUE);
 }
 
 LRESULT CALLBACK ShellTree::inputWatchProc(HWND hwnd, UINT msg, WPARAM wParam,
@@ -126,11 +132,16 @@ IFACEMETHODIMP ShellTree::QueryInterface(REFIID riid, void** ppv) {
     if (!ppv) return E_POINTER;
     if (riid == IID_IUnknown || riid == IID_INameSpaceTreeControlEvents) {
         *ppv = static_cast<INameSpaceTreeControlEvents*>(this);
-        AddRef();
-        return S_OK;
+    } else if (riid == IID_INameSpaceTreeControlCustomDraw) {
+        // Discovered on this same object by the control, via QueryInterface on
+        // the punk handed to TreeAdvise - there is no separate registration call.
+        *ppv = static_cast<INameSpaceTreeControlCustomDraw*>(this);
+    } else {
+        *ppv = nullptr;
+        return E_NOINTERFACE;
     }
-    *ppv = nullptr;
-    return E_NOINTERFACE;
+    AddRef();
+    return S_OK;
 }
 
 IFACEMETHODIMP_(ULONG) ShellTree::AddRef() {
@@ -227,3 +238,57 @@ IFACEMETHODIMP ShellTree::OnAfterContextMenu(IShellItem*, IContextMenu*, REFIID,
 }
 IFACEMETHODIMP ShellTree::OnBeforeStateImageChange(IShellItem*) { return S_OK; }
 IFACEMETHODIMP ShellTree::OnGetDefaultIconIndex(IShellItem*, int*, int*) { return E_NOTIMPL; }
+
+//--------------------------------------------------------------------
+// INameSpaceTreeControlCustomDraw
+//--------------------------------------------------------------------
+
+IFACEMETHODIMP ShellTree::PrePaint(HDC, RECT*, LRESULT* plres) {
+    // Ask for a callback before each item so its post-paint step can be
+    // requested individually; the control's own drawing is left untouched.
+    if (plres) *plres = CDRF_NOTIFYITEMDRAW;
+    return S_OK;
+}
+
+IFACEMETHODIMP ShellTree::PostPaint(HDC, RECT*) { return S_OK; }
+
+IFACEMETHODIMP ShellTree::ItemPrePaint(HDC, RECT*, NSTCCUSTOMDRAW*, COLORREF*,
+                                       COLORREF*, LRESULT* plres) {
+    // Colours are left as the control chose them; only a post-paint pass is
+    // requested, to add the count after the item has drawn normally.
+    if (plres) *plres = CDRF_NOTIFYPOSTPAINT;
+    return S_OK;
+}
+
+IFACEMETHODIMP ShellTree::ItemPostPaint(HDC hdc, RECT* prc, NSTCCUSTOMDRAW* item) {
+    if (!folderSessionCount || !item || !item->psi || !prc || !hdc) return S_OK;
+
+    PWSTR name = nullptr;
+    // Fails for a virtual node (This PC, a library) exactly like the selection
+    // handler, which is the right outcome: nothing to count for those.
+    if (FAILED(item->psi->GetDisplayName(SIGDN_FILESYSPATH, &name)) || !name)
+        return S_OK;
+    std::wstring path = lowerW(name);
+    CoTaskMemFree(name);
+    while (path.size() > 1 && path.back() == L'\\') path.pop_back();
+
+    int count = folderSessionCount(path);
+    if (count <= 0) return S_OK;
+
+    std::wstring label = L"(" + std::to_wstring(count) + L")";
+
+    // Right-aligned with padding proportional to the row height, so it scales
+    // with DPI the same way the row itself does.
+    int pad = (prc->bottom - prc->top) / 3;
+    RECT textRc = *prc;
+    textRc.right -= pad;
+    if (textRc.right <= textRc.left) return S_OK;
+
+    int saved = SaveDC(hdc);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, Theme::instance().dimText());
+    DrawTextW(hdc, label.c_str(), -1, &textRc,
+              DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    RestoreDC(hdc, saved);
+    return S_OK;
+}

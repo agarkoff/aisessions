@@ -326,6 +326,10 @@ void MainWindow::createChildren() {
     RECT treeRc{0, 0, 0, 0};
     tree_.create(hwnd_, treeRc);
     tree_.onSelectionChanged = [this](const std::wstring& path) { onFolderSelected(path); };
+    tree_.folderSessionCount = [this](const std::wstring& path) -> int {
+        auto it = dirCounts_.find(path);
+        return it != dirCounts_.end() ? it->second : 0;
+    };
 
     hList_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP
@@ -1164,6 +1168,7 @@ void MainWindow::onLoadDone(LPARAM lParam) {
     SendMessageW(hAgent_, CB_SETCURSEL, restore, 0);
 
     applyFilter();
+    tree_.invalidate();  // dirCounts_ just changed under buildViews()
 }
 
 void MainWindow::buildViews() {
@@ -1181,6 +1186,22 @@ void MainWindow::buildViews() {
         v.lcDirectory = lowerW(v.directory);
         v.lcSearch = lowerW(v.title) + L'\n' + v.lcDirectory + L'\n' + lowerW(v.sessionId);
         views_.push_back(std::move(v));
+    }
+    buildDirCounts();
+}
+
+void MainWindow::buildDirCounts() {
+    // Every ancestor of a session's directory gets +1: "D:\a\b" contributes to
+    // "d:", "d:\a" and "d:\a\b" alike, so a count already means "at or under
+    // this folder" with no extra summing needed when the tree asks about it.
+    dirCounts_.clear();
+    for (const auto& v : views_) {
+        if (v.lcDirectory.empty()) continue;
+        std::wstring prefix;
+        for (const auto& part : splitW(v.lcDirectory, L'\\')) {
+            prefix = prefix.empty() ? part : prefix + L'\\' + part;
+            ++dirCounts_[prefix];
+        }
     }
 }
 

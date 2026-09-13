@@ -57,6 +57,14 @@ The project transcripts run to hundreds of megabytes, so they are scanned in
 * Left pane is the shell's own navigation control (`CLSID_NamespaceTreeControl`)
   — the same one Explorer uses, so drives, folders and icons look identical.
   Selecting a folder filters the list to sessions at or below it.
+* Each folder shows, right-aligned and dimmed, the number of sessions at or
+  under it — a plain `unordered_map<path, count>` built from every session's
+  directory and all of its ancestors in one pass, so the number is already
+  "at or under this folder" with no per-item recursion when the tree paints.
+  Drawn via `INameSpaceTreeControlCustomDraw`, discovered by the control
+  through `QueryInterface` on the same object passed to `TreeAdvise` — there
+  is no separate registration call for it. A folder with no sessions is left
+  exactly as Explorer would show it.
 * Expanding is driven from `INameSpaceTreeControlEvents::OnItemClick` rather
   than by a control style: a click on a label or icon opens a folder and never
   closes it, while a click on the expando toggles it and leaves the selection

@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/Session.h"
@@ -108,6 +109,7 @@ private:
     void loadSessionsAsync();
     void onLoadDone(LPARAM lParam);
     void buildViews();
+    void buildDirCounts();  // one pass over views_, feeds the tree's counts
     void applyFilter();
     void fillList();
     void setSubItem(int row, int col, const std::wstring& text);
@@ -141,6 +143,8 @@ private:
     // leftWidth_ and colWidth_ are physical pixels at dpi_; Settings stores the
     // same values in 96-dpi units so a saved layout survives a monitor change.
     std::vector<Session> all_;
+    // Lowercased directory -> sessions at or under it; drives the tree's counts.
+    std::unordered_map<std::wstring, int> dirCounts_;
     std::vector<SessionView> views_;
     std::vector<int> filtered_;  // indices into all_/views_
     std::vector<std::wstring> agents_;
