@@ -17,6 +17,48 @@ add_compile_definitions(
   _WIN32_WINNT=0x0A00
 )
 
+# The app only reads opencode.db through seven sqlite3_* calls, so the whole
+# amalgamation is compiled out of those feature sets. Keep WAL and the core
+# query machinery intact; that is what opencode.db actually needs. Marking the
+# translation unit /Os also keeps its code column slim without touching the
+# interactive parts of the app.
+set(_sqlite_omits
+  SQLITE_THREADSAFE=0
+  SQLITE_DEFAULT_MEMSTATUS=0
+  SQLITE_OMIT_LOAD_EXTENSION
+  SQLITE_OMIT_DEPRECATED
+  SQLITE_OMIT_GET_TABLE
+  SQLITE_OMIT_TRACE
+  SQLITE_OMIT_PROGRESS_CALLBACK
+  SQLITE_OMIT_SHARED_CACHE
+  SQLITE_OMIT_AUTOVACUUM
+  SQLITE_OMIT_BUILTIN_TEST
+  SQLITE_OMIT_COMPILEOPTION_DIAGS
+  SQLITE_OMIT_DESERIALIZE
+  SQLITE_OMIT_EXPLAIN
+  SQLITE_OMIT_LOOKASIDE
+  SQLITE_OMIT_DBSTAT_VTAB
+  SQLITE_OMIT_JSON
+  SQLITE_OMIT_FTS3
+  SQLITE_OMIT_FTS4
+  SQLITE_OMIT_FTS5
+  SQLITE_OMIT_RTREE
+  SQLITE_OMIT_UTF16
+  SQLITE_OMIT_INTROSPECTION_PRAGMAS
+  SQLITE_OMIT_SCHEMA_PRAGMAS
+  SQLITE_OMIT_MEMORYDB
+  SQLITE_OMIT_FOREIGN_KEY
+  SQLITE_OMIT_GENERATED_COLUMNS
+  SQLITE_OMIT_DECLTYPE
+  SQLITE_OMIT_COLUMN_METADATA
+  SQLITE_OMIT_LOCALTIME
+)
+set_source_files_properties(third_party/sqlite/sqlite3.c PROPERTIES
+  COMPILE_DEFINITIONS "${_sqlite_omits}"
+  COMPILE_OPTIONS "/Os"
+)
+unset(_sqlite_omits)
+
 add_executable(aisessions
   src/main.cpp
   src/resource.h
