@@ -3,6 +3,8 @@
 Browser for Claude Code and OpenCode session history. Pure Win32 / C++20, no
 runtime dependencies — a single self-contained `aisessions.exe`.
 
+![AI Sessions](screenshot.png)
+
 Rows select the Explorer way — click, Ctrl+click, Shift+click, Ctrl+A — and a
 click on a column header sorts by it; a second click flips the direction. The
 sort survives a restart, and the selection survives a re-sort or a narrower
