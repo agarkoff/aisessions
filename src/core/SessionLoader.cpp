@@ -295,7 +295,7 @@ std::vector<Session> SessionLoader::loadOpenCode() {
     }
 
     const char* sql =
-        "SELECT id, directory, title, time_created, time_updated, model "
+        "SELECT id, directory, title, time_created, time_updated, model, parent_id "
         "FROM session ORDER BY time_updated DESC";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -325,7 +325,7 @@ std::vector<Session> SessionLoader::loadOpenCode() {
         long long size = 0;
         if (auto sz = sizes.find(id); sz != sizes.end()) size = sz->second;
 
-        result.push_back(Session{
+        Session session{
             "OpenCode",
             std::move(id),
             col(1),
@@ -334,7 +334,9 @@ std::vector<Session> SessionLoader::loadOpenCode() {
             sqlite3_column_int64(stmt, 3),
             sqlite3_column_int64(stmt, 4),
             size,
-        });
+        };
+        session.parentId = col(6);
+        result.push_back(std::move(session));
     }
 
     sqlite3_finalize(stmt);

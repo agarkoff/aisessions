@@ -14,6 +14,11 @@ struct Session {
     // False for a Claude session whose transcript has been pruned: only its
     // history line is left, so `claude --resume` has nothing to open.
     bool resumable = true;
+    // OpenCode only: the session this one was spawned from as a subagent, or
+    // empty for a top-level session. `opencode session delete` cascades to a
+    // session's own children, so deleting a parent removes these too even
+    // though this app lists them as ordinary, separate rows.
+    std::string parentId;
 
     std::string updatedStr() const {
         return formatLocal(updatedMs);

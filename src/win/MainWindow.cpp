@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cwctype>
 #include <cstring>
+#include <unordered_set>
 
 LRESULT CALLBACK MainWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     MainWindow* self = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -703,16 +704,16 @@ void MainWindow::deleteStaleSessions() {
     // "Stale" is the same thing the list dims: a Claude session whose
     // transcript has been pruned. Scoped to the current view so the folder
     // tree and the search box narrow what gets cleaned up.
-    std::vector<std::string> ids;
+    std::vector<Session> stale;
     for (int index : filtered_) {
         const Session& s = all_[index];
-        if (s.agent == "Claude" && !s.resumable) ids.push_back(s.sessionId);
+        if (s.agent == "Claude" && !s.resumable) stale.push_back(s);
     }
-    if (ids.empty()) return;
+    if (stale.empty()) return;
 
     std::wstring prompt =
-        L"Delete " + std::to_wstring(ids.size()) + L" stale session" +
-        (ids.size() == 1 ? L"" : L"s") + L" shown in the list?\n\n"
+        L"Delete " + std::to_wstring(stale.size()) + L" stale session" +
+        (stale.size() == 1 ? L"" : L"s") + L" shown in the list?\n\n"
         L"These have no transcript left, so they cannot be resumed; only their "
         L"lines in history.jsonl remain. The file is rewritten once, with the "
         L"previous version kept as history.jsonl.bak.";
@@ -723,7 +724,7 @@ void MainWindow::deleteStaleSessions() {
     HCURSOR previous = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     long long freed = 0;
     std::wstring error;
-    bool ok = SessionActions::deleteClaudeSessions(ids, freed, error);
+    bool ok = SessionActions::deleteClaudeSessions(stale, freed, error);
     SetCursor(previous);
 
     if (!ok) {
@@ -733,10 +734,10 @@ void MainWindow::deleteStaleSessions() {
 
     std::wstring freedText = utf8to16(Session::formatSize(freed));
     if (freed <= 0) freedText = L"0 B";
-    std::wstring done = L"Deleted " + std::to_wstring(ids.size()) + L" stale session" +
-                        (ids.size() == 1 ? L"" : L"s") + L".\n\nFreed " + freedText +
+    std::wstring done = L"Deleted " + std::to_wstring(stale.size()) + L" stale session" +
+                        (stale.size() == 1 ? L"" : L"s") + L".\n\nFreed " + freedText +
                         L" in history.jsonl.";
-    setStatus(L"Deleted " + std::to_wstring(ids.size()) + L" stale sessions, freed " + freedText);
+    setStatus(L"Deleted " + std::to_wstring(stale.size()) + L" stale sessions, freed " + freedText);
     loadSessionsAsync();
     MessageBoxW(hwnd_, done.c_str(), L"Delete stale sessions", MB_ICONINFORMATION | MB_OK);
 }
@@ -871,11 +872,34 @@ void MainWindow::startNewSessionInDirectory(const std::string& agent,
 void MainWindow::deleteSessions(const std::vector<int>& rows) {
     if (rows.empty()) return;
 
-    bool anyClaude = false, anyOpenCode = false;
+    std::vector<Session> claudeSessions, openCodeSessions;
+    std::unordered_set<std::string> openCodeSelected;
     for (int row : rows) {
-        const std::string& agent = all_[filtered_[row]].agent;
-        anyClaude |= agent == "Claude";
-        anyOpenCode |= agent == "OpenCode";
+        const Session& s = all_[filtered_[row]];
+        if (s.agent == "Claude") claudeSessions.push_back(s);
+        else if (s.agent == "OpenCode") {
+            openCodeSessions.push_back(s);
+            openCodeSelected.insert(s.sessionId);
+        }
+    }
+
+    // `opencode session delete` cascades to a session's own subagent children
+    // on the vendor's side; this app lists those as ordinary separate rows,
+    // so the selection alone understates what a delete here actually removes.
+    // Walk out from the selection to warn about the real total before asking,
+    // and keep the extras themselves - they get logged either way, since
+    // opencode removes them silently and this is the only record of why.
+    std::unordered_set<std::string> cascade = openCodeSelected;
+    std::vector<Session> cascadeExtras;
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const Session& s : all_) {
+            if (s.agent != "OpenCode" || s.parentId.empty()) continue;
+            if (cascade.count(s.parentId) && cascade.insert(s.sessionId).second) {
+                cascadeExtras.push_back(s);
+                changed = true;
+            }
+        }
     }
 
     std::wstring prompt;
@@ -891,11 +915,19 @@ void MainWindow::deleteSessions(const std::vector<int>& rows) {
         }
         prompt += L"\n";
     }
-    if (anyClaude)
+    if (!claudeSessions.empty())
         prompt += L"Claude: the transcript goes to the Recycle Bin and the entry is "
                   L"removed from history.jsonl, which is backed up as history.jsonl.bak.\n";
-    if (anyOpenCode)
-        prompt += L"OpenCode: this runs `opencode session delete` and cannot be undone.\n";
+    if (!openCodeSessions.empty()) {
+        prompt += L"OpenCode: this runs `opencode session delete`. opencode.db is backed "
+                  L"up first and restored automatically if anything fails partway "
+                  L"through.\n";
+        if (!cascadeExtras.empty())
+            prompt += L"This also spawned " + std::to_wstring(cascadeExtras.size()) +
+                      L" subagent session" + (cascadeExtras.size() == 1 ? L"" : L"s") +
+                      L" not listed above, which opencode will delete along with "
+                      L"their parent.\n";
+    }
 
     if (MessageBoxW(hwnd_, prompt.c_str(), L"Delete session",
                     MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
@@ -904,10 +936,28 @@ void MainWindow::deleteSessions(const std::vector<int>& rows) {
     HCURSOR previous = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     std::wstring errors;
     size_t deleted = 0;
-    for (int row : rows) {
+    if (!claudeSessions.empty()) {
+        long long freed = 0;
         std::wstring error;
-        if (SessionActions::deleteSession(all_[filtered_[row]], error)) ++deleted;
-        else errors += views_[filtered_[row]].sessionId + L": " + error + L"\n";
+        if (SessionActions::deleteClaudeSessions(claudeSessions, freed, error))
+            deleted += claudeSessions.size();
+        else
+            errors += error + L"\n";
+    }
+    if (!openCodeSessions.empty()) {
+        std::wstring error;
+        bool ok = SessionActions::deleteOpenCodeSessions(openCodeSessions, error);
+        if (ok) {
+            deleted += openCodeSessions.size();
+            // These were never passed to deleteOpenCodeSessions - opencode
+            // removed them on its own as a side effect of their parent's
+            // delete - so this app has to log them itself.
+            for (const Session& s : cascadeExtras)
+                SessionActions::logDeletion(
+                    s, "deleted along with parent (subagent cascade, not requested directly)");
+        } else {
+            errors += error + L"\n";
+        }
     }
     SetCursor(previous);
 

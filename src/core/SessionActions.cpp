@@ -6,12 +6,15 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
+
+#include <sqlite3.h>
 
 namespace fs = std::filesystem;
 
@@ -37,6 +40,42 @@ fs::path homePath() {
 bool onPath(const wchar_t* exe) {
     wchar_t found[MAX_PATH]{};
     return SearchPathW(nullptr, exe, nullptr, MAX_PATH, found, nullptr) > 0;
+}
+
+// %LOCALAPPDATA%\AISessions is where Settings also keeps settings.json.
+fs::path deletionLogPath() {
+    std::wstring base = envW(L"LOCALAPPDATA");
+    fs::path dir = base.empty() ? fs::path(L".") / L"AISessions"
+                                : fs::path(base) / L"AISessions";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir / L"deletions.log";
+}
+
+// Escapes a string for use inside a JSON double-quoted string - just what a
+// session's title or directory can actually contain (quotes, backslashes,
+// control characters); not a general-purpose JSON writer.
+std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (c < 0x20) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            } else {
+                out.push_back(static_cast<char>(c));
+            }
+        }
+    }
+    return out;
 }
 
 std::wstring quotePath(const std::wstring& s) {
@@ -339,28 +378,57 @@ bool dropFromClaudeHistory(const std::unordered_set<std::string>& sessionIds,
     return true;
 }
 
-bool deleteClaudeSession(const Session& session, std::wstring& error) {
-    fs::path transcript = findClaudeTranscript(session.sessionId);
-    if (!transcript.empty() && !recycle(transcript, error)) return false;
-    return dropFromClaudeHistory({session.sessionId}, error);
+// %LOCALAPPDATA%\share\opencode\opencode.db is where the Windows build keeps
+// its database; the ~/.local/share layout is the fallback. Mirrors
+// SessionLoader's own lookup, which has no header to share this from.
+fs::path openCodeDbPath() {
+    fs::path primary = fs::path(envW(L"LOCALAPPDATA")) / L"share" / L"opencode" / L"opencode.db";
+    fs::path fallback = homePath() / L".local" / L"share" / L"opencode" / L"opencode.db";
+    std::error_code ec;
+    if (fs::exists(primary, ec)) return primary;
+    if (fs::exists(fallback, ec)) return fallback;
+    return {};
 }
 
-bool deleteOpenCodeSession(const Session& session, std::wstring& error) {
-    if (!onPath(L"opencode.exe")) {
-        error = L"opencode was not found on PATH, so the session cannot be deleted.";
-        return false;
-    }
-    std::wstring command =
-        L"opencode.exe session delete " + utf8to16(session.sessionId);
+// Copies one sqlite database into another via the online backup API rather
+// than a raw file copy: it produces a consistent snapshot regardless of a
+// concurrent writer or WAL activity on either end, and - used in reverse for
+// restoring - writes through sqlite's normal locking instead of clobbering a
+// database something else might have open.
+bool sqliteBackup(const fs::path& srcPath, int srcFlags, const fs::path& dstPath,
+                  int dstFlags, std::wstring& error) {
+    sqlite3* src = nullptr;
+    sqlite3* dst = nullptr;
+    std::string srcUtf8 = utf16to8(srcPath.wstring());
+    std::string dstUtf8 = utf16to8(dstPath.wstring());
 
-    DWORD exitCode = 0;
-    if (!runHidden(command, exitCode, error)) return false;
-    if (exitCode != 0) {
-        error = L"`opencode session delete` failed with exit code " +
-                std::to_wstring(exitCode) + L".";
-        return false;
+    bool ok = sqlite3_open_v2(srcUtf8.c_str(), &src, srcFlags, nullptr) == SQLITE_OK;
+    if (ok) ok = sqlite3_open_v2(dstUtf8.c_str(), &dst, dstFlags, nullptr) == SQLITE_OK;
+
+    sqlite3_backup* backup = ok ? sqlite3_backup_init(dst, "main", src, "main") : nullptr;
+    if (ok && !backup) ok = false;
+
+    if (backup) {
+        int rc;
+        int busyRetries = 0;
+        do {
+            rc = sqlite3_backup_step(backup, -1);
+            if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+                if (++busyRetries > 50) break;  // ~5s waiting for the other side to let go
+                Sleep(100);
+            }
+        } while (rc == SQLITE_OK || rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
+        ok = (rc == SQLITE_DONE);
+        sqlite3_backup_finish(backup);
     }
-    return true;
+    if (!ok) {
+        const char* detail = dst ? sqlite3_errmsg(dst) : "sqlite3_open failed";
+        error = L"Could not copy " + srcPath.wstring() + L" to " + dstPath.wstring() +
+                L": " + utf8to16(detail);
+    }
+    sqlite3_close(dst);
+    sqlite3_close(src);
+    return ok;
 }
 
 // Builds the agent's own invocation: `claude.exe --resume <id>` or a bare
@@ -428,10 +496,29 @@ bool SessionActions::startNewSession(const std::string& agent, const std::wstrin
     return launchInTerminal(command, directory, error);
 }
 
-bool SessionActions::deleteClaudeSessions(const std::vector<std::string>& sessionIds,
+void SessionActions::logDeletion(const Session& session, const std::string& outcome) {
+    std::ofstream out(deletionLogPath(), std::ios::binary | std::ios::app);
+    if (!out) return;
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    char stamp[32];
+    std::snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d %02d:%02d:%02d", st.wYear,
+                 st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+    out << "{\"time\":\"" << stamp << "\",\"agent\":\"" << jsonEscape(session.agent)
+        << "\",\"sessionId\":\"" << jsonEscape(session.sessionId) << "\",\"title\":\""
+        << jsonEscape(session.title) << "\",\"directory\":\"" << jsonEscape(session.directory)
+        << "\",\"outcome\":\"" << jsonEscape(outcome) << "\"}\n";
+}
+
+bool SessionActions::deleteClaudeSessions(const std::vector<Session>& sessions,
                                           long long& freedBytes, std::wstring& error) {
     freedBytes = 0;
-    if (sessionIds.empty()) return true;
+    if (sessions.empty()) return true;
+
+    std::unordered_set<std::string> sessionIds;
+    for (const Session& s : sessions) sessionIds.insert(s.sessionId);
 
     std::error_code ec;
     // Any transcript that does still exist goes to the Recycle Bin first, so a
@@ -440,24 +527,107 @@ bool SessionActions::deleteClaudeSessions(const std::vector<std::string>& sessio
         fs::path transcript = findClaudeTranscript(id);
         if (transcript.empty()) continue;
         auto bytes = fs::file_size(transcript, ec);
-        if (!recycle(transcript, error)) return false;
+        if (!recycle(transcript, error)) {
+            for (const Session& s : sessions) logDeletion(s, "failed: " + utf16to8(error));
+            return false;
+        }
         if (!ec) freedBytes += static_cast<long long>(bytes);
     }
 
     fs::path history = homePath() / L".claude" / L"history.jsonl";
     auto before = fs::file_size(history, ec);
     if (ec) before = 0;
-    if (!dropFromClaudeHistory(
-            std::unordered_set<std::string>(sessionIds.begin(), sessionIds.end()), error))
+    if (!dropFromClaudeHistory(sessionIds, error)) {
+        for (const Session& s : sessions) logDeletion(s, "failed: " + utf16to8(error));
         return false;
+    }
     auto after = fs::file_size(history, ec);
     if (!ec && before > after) freedBytes += static_cast<long long>(before - after);
+
+    for (const Session& s : sessions) logDeletion(s, "deleted");
+    return true;
+}
+
+bool SessionActions::deleteOpenCodeSessions(const std::vector<Session>& sessions,
+                                            std::wstring& error) {
+    if (sessions.empty()) return true;
+    if (!onPath(L"opencode.exe")) {
+        error = L"opencode was not found on PATH, so sessions cannot be deleted.";
+        return false;
+    }
+
+    fs::path dbPath = openCodeDbPath();
+    std::error_code ec;
+    if (dbPath.empty() || !fs::exists(dbPath, ec)) {
+        error = L"Could not find opencode.db, so a safety backup cannot be made "
+                L"first; refusing to delete.";
+        return false;
+    }
+
+    fs::path backupPath = dbPath;
+    backupPath += L".bak";
+    if (!sqliteBackup(dbPath, SQLITE_OPEN_READONLY, backupPath,
+                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, error)) {
+        error = L"Could not back up opencode.db before deleting - refusing to delete "
+                L"without one:\n" + error;
+        return false;
+    }
+
+    std::vector<const Session*> succeeded;
+    for (size_t i = 0; i < sessions.size(); i++) {
+        const Session& session = sessions[i];
+        std::wstring command = L"opencode.exe session delete " + utf8to16(session.sessionId);
+        DWORD exitCode = 0;
+        std::wstring runError;
+        bool ran = runHidden(command, exitCode, runError);
+        if (ran && exitCode == 0) {
+            succeeded.push_back(&session);
+            continue;
+        }
+
+        std::wstring failure = ran
+            ? (L"`opencode session delete` failed for " + utf8to16(session.sessionId) +
+               L" with exit code " + std::to_wstring(exitCode) + L".")
+            : (utf8to16(session.sessionId) + L": " + runError);
+
+        std::wstring restoreError;
+        bool restored = sqliteBackup(backupPath, SQLITE_OPEN_READONLY, dbPath,
+                                     SQLITE_OPEN_READWRITE, restoreError);
+        if (restored) {
+            error = failure + L"\n\nRestored opencode.db from the backup taken just "
+                    L"before this batch, so nothing in it was lost.";
+            for (const Session* s : succeeded)
+                logDeletion(*s, "deleted, then restored (a later session in the same "
+                                "batch failed)");
+            logDeletion(session, "failed: " + utf16to8(failure) + " - batch restored");
+            for (size_t j = i + 1; j < sessions.size(); j++)
+                logDeletion(sessions[j], "skipped (batch aborted before reaching it)");
+        } else {
+            error = failure + L"\n\nCould not restore the backup either: " + restoreError +
+                    L"\nThe backup is still at " + backupPath.wstring();
+            for (const Session* s : succeeded) logDeletion(*s, "deleted (batch then failed; "
+                                                                "restore ALSO failed)");
+            logDeletion(session, "failed: " + utf16to8(failure) +
+                                     " - restore ALSO failed: " + utf16to8(restoreError));
+            for (size_t j = i + 1; j < sessions.size(); j++)
+                logDeletion(sessions[j], "skipped (batch aborted, restore failed - state "
+                                          "uncertain, see backup file)");
+        }
+        return false;
+    }
+
+    fs::remove(backupPath, ec);  // whole batch succeeded, no longer needed
+    for (const Session& s : sessions) logDeletion(s, "deleted");
     return true;
 }
 
 bool SessionActions::deleteSession(const Session& session, std::wstring& error) {
-    if (session.agent == "Claude") return deleteClaudeSession(session, error);
-    if (session.agent == "OpenCode") return deleteOpenCodeSession(session, error);
+    if (session.agent == "Claude") {
+        long long freedBytes = 0;
+        return deleteClaudeSessions({session}, freedBytes, error);
+    }
+    if (session.agent == "OpenCode")
+        return deleteOpenCodeSessions({session}, error);
     error = L"Deleting is not supported for agent \"" + utf8to16(session.agent) + L"\".";
     return false;
 }
